@@ -6,16 +6,17 @@
 
 #include "interrupts.hpp"
 
-// Global variable definitions - these maintain system state across function calls
-std::vector<Partition> partition_table;           // System memory partitions
-std::vector<PCB> pcb_table;                        // All processes in system
-std::vector<ExternalFile> external_files;         // Programs on disk
-std::queue<int> ready_queue;                       // Processes ready to run
-std::map<int, std::vector<int>> parent_child_map; // Parent-child relationships
-int next_pid = 1;                                  // Counter for next process ID
-int suspended_parent_pid = -1;                     // Tracks suspended parent
+// Global state variables
+std::vector<Partition> partition_table;
+std::vector<PCB> pcb_table;
+std::vector<ExternalFile> external_files;
+std::queue<int> ready_queue;
+std::map<int, std::vector<int>> parent_child_map;
 
-// System initialization - sets up memory and initial process
+int next_pid = 1;
+int suspended_parent_pid = -1;
+
+// Initialize system with memory partitions and init process
 void initialize_system() {
     // Create 5 fixed memory partitions with different sizes
     partition_table = {
@@ -26,22 +27,22 @@ void initialize_system() {
         {4, 8, "free"}
     };
     
-    // Create init process that starts the system
+    // Create init process - PID 0, runs at startup
     PCB init_process;
     init_process.pid = 0;
     init_process.ppid = -1;
     init_process.program_name = "init";
-    init_process.partition_number = 5;  // Reserved for init only
+    init_process.partition_number = 5;  // Reserved partition
     init_process.size = 0;
     init_process.state = "running";
     init_process.priority = 0;
-    pcb_table.push_back(init_process);
     
+    pcb_table.push_back(init_process);
     ready_queue.push(0);
     next_pid = 1;
 }
 
-// Load programs from external file - simulates disk access
+// Load available programs from external file (simulates disk storage)
 std::vector<ExternalFile> load_external_files(const std::string& filename) {
     std::vector<ExternalFile> files;
     std::ifstream file(filename);
@@ -66,23 +67,24 @@ std::vector<ExternalFile> load_external_files(const std::string& filename) {
     return files;
 }
 
-// Memory management - find free partition for program
+// Find free partition for program using first-fit allocation
+// Returns partition number if found, -1 if no suitable partition
 int find_available_partition(unsigned int program_size) {
     for (auto& part : partition_table) {
-        // First-fit algorithm: return first free partition that fits
         if (part.code == "free" && part.size >= program_size) {
             return part.number;
         }
     }
-    return -1;  // No suitable partition found
+    return -1;
 }
 
-// Process queue management - add process for execution
+// Add process to ready queue for scheduling
 void add_to_ready_queue(int pid) {
     ready_queue.push(pid);
 }
 
-// Get next process to execute from queue
+// Get next process from ready queue in FIFO order
+// Returns -1 if queue is empty
 int get_next_process() {
     if (ready_queue.empty()) return -1;
     int next = ready_queue.front();
@@ -90,7 +92,20 @@ int get_next_process() {
     return next;
 }
 
-// Check process relationships
+// Remove specific process from ready queue
+void remove_from_ready_queue(int pid) {
+    std::queue<int> temp;
+    while (!ready_queue.empty()) {
+        int current = ready_queue.front();
+        ready_queue.pop();
+        if (current != pid) {
+            temp.push(current);
+        }
+    }
+    ready_queue = temp;
+}
+
+// Check if pid is a child of parent_pid
 bool is_child_of(int pid, int parent_pid) {
     for (auto& pcb : pcb_table) {
         if (pcb.pid == pid && pcb.ppid == parent_pid) {
@@ -100,17 +115,27 @@ bool is_child_of(int pid, int parent_pid) {
     return false;
 }
 
-// FORK system call - creates child process by cloning parent
+// Mark process as terminated for cleanup
+void terminate_process(int pid) {
+    for (auto& pcb : pcb_table) {
+        if (pcb.pid == pid) {
+            pcb.state = "terminated";
+            break;
+        }
+    }
+}
+
+// Handle FORK system call - creates child process by cloning parent
 std::string handle_fork(int& current_time, std::vector<std::string>& vectors, int current_pid) {
     std::string result = "";
     const int CONTEXT_TIME = 10;
     
-    // Interrupt boilerplate: kernel switch + context save + vector lookup
+    // Interrupt entry: switch to kernel mode, save context, lookup vector
     auto [boilerplate, new_time] = intr_boilerplate(current_time, 2, CONTEXT_TIME, vectors);
     result += boilerplate;
     current_time = new_time;
     
-    // Find parent process to clone
+    // Find parent process in PCB table
     PCB parent;
     bool found = false;
     for (const auto& pcb : pcb_table) {
@@ -130,9 +155,9 @@ std::string handle_fork(int& current_time, std::vector<std::string>& vectors, in
         return result;
     }
     
-    // Clone parent to create child process
+    // Clone parent process to create child
     PCB child = parent;
-    child.pid = next_pid++;           // Assign new process ID
+    child.pid = next_pid++;           // Assign new unique PID
     child.ppid = current_pid;         // Set parent relationship
     child.priority = 1;               // Child has higher priority
     pcb_table.push_back(child);
@@ -140,15 +165,11 @@ std::string handle_fork(int& current_time, std::vector<std::string>& vectors, in
     add_to_ready_queue(child.pid);
     
     // Log PCB cloning operation
-    int fork_duration = 1;
-    result += std::to_string(current_time) + ", " + std::to_string(fork_duration)
-           + ", cloning the PCB\n";
-    current_time += fork_duration;
+    result += std::to_string(current_time) + ", 1, cloning the PCB\n";
+    current_time += 1;
     
-    // Scheduler runs at no time cost
-    int sched_duration = 0;
-    result += std::to_string(current_time) + ", " + std::to_string(sched_duration)
-           + ", scheduler called\n";
+    // Call scheduler (no time cost)
+    result += std::to_string(current_time) + ", 0, scheduler called\n";
     
     // Return from interrupt
     result += execute_iret(current_time);
@@ -158,7 +179,7 @@ std::string handle_fork(int& current_time, std::vector<std::string>& vectors, in
     return result;
 }
 
-// EXEC system call - loads program from disk into memory
+// Handle EXEC system call - load program from disk into memory partition
 std::string handle_exec(const std::string& program_name, int& current_time,
                         std::vector<std::string>& vectors, 
                         std::vector<ExternalFile>& external_files,
@@ -166,12 +187,12 @@ std::string handle_exec(const std::string& program_name, int& current_time,
     std::string result = "";
     const int CONTEXT_TIME = 10;
     
-    // Interrupt boilerplate
+    // Interrupt entry sequence
     auto [boilerplate, new_time] = intr_boilerplate(current_time, 3, CONTEXT_TIME, vectors);
     result += boilerplate;
     current_time = new_time;
     
-    // Search for program in external files (disk)
+    // Search for requested program in external files (disk)
     int program_size = 0;
     bool found = false;
     for (const auto& file : external_files) {
@@ -191,7 +212,7 @@ std::string handle_exec(const std::string& program_name, int& current_time,
         return result;
     }
     
-    // Find partition for program (first-fit algorithm)
+    // Use first-fit to find available partition
     int partition_to_use = find_available_partition(program_size);
     
     if (partition_to_use == -1) {
@@ -211,25 +232,19 @@ std::string handle_exec(const std::string& program_name, int& current_time,
         }
     }
     
-    // Simulate disk load: time = size * 15ms per MB
-    int program_mb_size = program_size;
-    int loader_time = program_mb_size * 15;
+    // Simulate disk load operation: 15ms per MB
+    int loader_time = program_size * 15;
     result += std::to_string(current_time) + ", " + std::to_string(loader_time)
             + ", loading " + program_name + " from disk to partition " 
             + std::to_string(partition_to_use) + "\n";
     current_time += loader_time;
     
-    // Mark partition as occupied
-    int mark_duration = 1;
-    result += std::to_string(current_time) + ", " + std::to_string(mark_duration)
-           + ", marking partition as occupied\n";
-    current_time += mark_duration;
+    result += std::to_string(current_time) + ", 1, marking partition as occupied\n";
+    current_time += 1;
     
     // Update process control block with new program info
-    int update_duration = 3;
-    result += std::to_string(current_time) + ", " + std::to_string(update_duration)
-           + ", updating PCB\n";
-    current_time += update_duration;
+    result += std::to_string(current_time) + ", 3, updating PCB\n";
+    current_time += 3;
     
     for (auto& pcb : pcb_table) {
         if (pcb.pid == current_pid) {
@@ -240,10 +255,8 @@ std::string handle_exec(const std::string& program_name, int& current_time,
         }
     }
     
-    // Scheduler runs
-    int sched_duration = 0;
-    result += std::to_string(current_time) + ", " + std::to_string(sched_duration)
-           + ", scheduler called\n";
+    // Scheduler processes context switch
+    result += std::to_string(current_time) + ", 0, scheduler called\n";
     
     // Return from interrupt
     result += execute_iret(current_time);
@@ -253,7 +266,7 @@ std::string handle_exec(const std::string& program_name, int& current_time,
     return result;
 }
 
-// CPU execution simulation - process runs for specified duration
+// Simulate CPU execution for specified duration in milliseconds
 std::string simulate_cpu(int duration, int& current_time) {
     std::string result = std::to_string(current_time) + ", "
                        + std::to_string(duration) + ", CPU execution\n";
@@ -261,7 +274,8 @@ std::string simulate_cpu(int duration, int& current_time) {
     return result;
 }
 
-// Execute interrupt service routine - runs device handler
+// Execute interrupt service routine for specific device
+// ISR duration determined by delays.txt indexed by device_num
 std::string execute_isr(int device_num, int& current_time, std::vector<int>& delays,
                         const std::string& isr_type) {
     int isr_delay = delays[device_num];
@@ -272,14 +286,14 @@ std::string execute_isr(int device_num, int& current_time, std::vector<int>& del
     return result;
 }
 
-// IRET - return from interrupt
+// Return from interrupt instruction (1ms)
 std::string execute_iret(int& current_time) {
     std::string result = std::to_string(current_time) + ", 1, IRET\n";
     current_time += 1;
     return result;
 }
 
-// Restore context - restore CPU state after interrupt
+// Restore processor context from stack (10ms standard time)
 std::string restore_context(int& current_time) {
     const int CONTEXT_TIME = 10;
     std::string result = std::to_string(current_time) + ", "
@@ -288,14 +302,14 @@ std::string restore_context(int& current_time) {
     return result;
 }
 
-// Switch to user mode - return from kernel to user execution
+// Switch from kernel mode to user mode (1ms)
 std::string switch_to_user_mode(int& current_time) {
     std::string result = std::to_string(current_time) + ", 1, switch to user mode\n";
     current_time += 1;
     return result;
 }
 
-// Handle interrupt - complete sequence from entry to return
+// Complete interrupt handling: entry -> ISR -> exit
 std::string handle_interrupt(int device_num, int& current_time,
                             std::vector<std::string>& vectors,
                             std::vector<int>& delays,
@@ -314,32 +328,33 @@ std::string handle_interrupt(int device_num, int& current_time,
     return result;
 }
 
-// Interrupt boilerplate - standard entry sequence for all interrupts
+// Standard interrupt entry sequence used for all interrupts
+// Steps: kernel mode switch -> context save -> vector lookup -> PC load
 std::pair<std::string, int> intr_boilerplate(int current_time, int intr_num, 
                                               int context_save_time, 
                                               std::vector<std::string> vectors) {
     std::string execution = "";
     
-    // Step 1: Switch to kernel mode
+    // Switch to kernel mode
     execution += std::to_string(current_time) + ", 1, switch to kernel mode\n";
     current_time++;
     
-    // Step 2: Save processor context
+    // Save CPU context to stack
     execution += std::to_string(current_time) + ", " + std::to_string(context_save_time) 
               + ", context saved\n";
     current_time += context_save_time;
     
-    // Step 3: Calculate vector table address
+    // Calculate vector table address
     char vector_address_c[10];
     sprintf(vector_address_c, "0x%04X", (ADDR_BASE + (intr_num * VECTOR_SIZE)));
     std::string vector_address(vector_address_c);
     
-    // Step 4: Find vector in memory
+    // Find vector entry in memory
     execution += std::to_string(current_time) + ", 1, find vector " + std::to_string(intr_num)
               + " in memory position " + vector_address + "\n";
     current_time++;
     
-    // Step 5: Load ISR address into program counter
+    // Load ISR address into program counter
     execution += std::to_string(current_time) + ", 1, load address " + vectors.at(intr_num) 
               + " into the PC\n";
     current_time++;
@@ -347,7 +362,7 @@ std::pair<std::string, int> intr_boilerplate(int current_time, int intr_num,
     return std::make_pair(execution, current_time);
 }
 
-// String parsing utility - split by delimiter
+// Split string by delimiter - utility for parsing
 std::vector<std::string> split_delim(std::string input, std::string delim) {
     std::vector<std::string> tokens;
     std::size_t pos = 0;
@@ -362,7 +377,8 @@ std::vector<std::string> split_delim(std::string input, std::string delim) {
     return tokens;
 }
 
-// Parse trace file line
+// Parse trace file line into activity name and numeric value
+// Example: "FORK,10" -> ("FORK", 10)
 std::tuple<std::string, int> parse_trace(std::string trace) {
     auto parts = split_delim(trace, ",");
     if (parts.size() < 2) {
@@ -381,7 +397,8 @@ std::tuple<std::string, int> parse_trace(std::string trace) {
     return {activity, value};
 }
 
-// Parse command line arguments and load input files
+// Parse command line arguments and load all required input files
+// Arguments: trace_file, vector_table, device_delays, external_programs
 std::tuple<std::vector<std::string>, std::vector<int>> parse_args(int argc, char** argv) {
     if(argc != 5) {
         std::cout << "ERROR! Expected 4 arguments\n";
@@ -397,7 +414,7 @@ std::tuple<std::vector<std::string>, std::vector<int>> parse_args(int argc, char
     }
     input_file.close();
     
-    // Load interrupt vector table
+    // Load interrupt vector addresses
     std::ifstream input_vector_table(argv[2]);
     if (!input_vector_table.is_open()) {
         std::cerr << "Error: Unable to open " << argv[2] << std::endl;
@@ -440,7 +457,7 @@ void write_output(std::string execution) {
     }
 }
 
-// Write system status snapshots
+// Write system status information
 void write_system_status_file(std::string status) {
     std::ofstream status_file("system_status.txt");
     if (status_file.is_open()) {
@@ -449,7 +466,7 @@ void write_system_status_file(std::string status) {
     }
 }
 
-// Main simulation loop - processes trace file and generates output
+// Main simulation - read trace file and generate execution output
 int main(int argc, char** argv) {
     auto [vectors, delays] = parse_args(argc, argv);
     std::ifstream input_file(argv[1]);
@@ -465,42 +482,35 @@ int main(int argc, char** argv) {
     initialize_system();
     external_files = load_external_files(argv[4]);
     
-    // Process each trace line
+    // Process each line from trace file
     while(std::getline(input_file, trace)) {
         auto [activity, value] = parse_trace(trace);
         
-        // Simulate CPU execution
         if(activity == "CPU") {
             execution += simulate_cpu(value, current_time);
         }
-        // Handle FORK system call
         else if (activity == "FORK") {
             execution += handle_fork(current_time, vectors, current_pid);
         }
-        // Mark start of child-only code
         else if (activity == "IF_CHILD") {
             in_child_block = true;
             in_parent_block = false;
             block_pid = value;
         }
-        // Mark start of parent-only code
         else if (activity == "IF_PARENT") {
             in_child_block = false;
             in_parent_block = true;
             block_pid = value;
         }
-        // Mark end of conditional block
         else if (activity == "ENDIF") {
             in_child_block = false;
             in_parent_block = false;
             block_pid = -1;
         }
-        // Handle EXEC system call
         else if (activity.substr(0, 4) == "EXEC") {
             std::string program_name = activity.substr(5);
             execution += handle_exec(program_name, current_time, vectors, external_files, current_pid);
         }
-        // Handle device interrupts
         else if (activity == "SYSCALL" || activity == "END_IO"){
             execution += handle_interrupt(value, current_time, vectors, delays, activity);
         }
@@ -508,7 +518,7 @@ int main(int argc, char** argv) {
     
     input_file.close();
     
-    // Add final system state to output
+    // Append final system state to output
     execution += "\nFinal System State\n";
     execution += "Partition Table:\n";
     for (const auto& part : partition_table) {

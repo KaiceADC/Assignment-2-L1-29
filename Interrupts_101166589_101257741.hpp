@@ -12,6 +12,7 @@
 #include <limits>
 
 
+
 // Simulator constants
 #define ADDR_BASE 0        // Base address for vector table
 #define VECTOR_SIZE 2      // Each vector entry is 2 bytes

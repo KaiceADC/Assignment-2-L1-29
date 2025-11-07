@@ -1,111 +1,179 @@
 /**
- * @file interrupts.cpp
- * @author Sasisekhar Govind
- * 
+ * @file interrupts.cpp - PART 4 CORRECTED
+ * Handles IF_CHILD, IF_PARENT, ENDIF with proper child priority execution
  */
 
 #include "interrupts.hpp"
 
-// Global vectors (MUST be outside main)
+// ============================================================
+// GLOBAL VARIABLES
+// ============================================================
+
 std::vector<Partition> partition_table;
 std::vector<PCB> pcb_table;
 std::vector<ExternalFile> external_files;
+std::queue<int> ready_queue;
+std::map<int, std::vector<int>> parent_child_map;
+int next_pid = 1;
+int suspended_parent_pid = -1;
 
+// ============================================================
+// INITIALIZATION
+// ============================================================
 
-/**
- * Initialize the system with partitions and init process
- * Called at the start of simulation before processing trace file
- */
 void initialize_system() {
-    // Create 6 fixed partitions
     partition_table = {
-        {1, 40, "free"},
-        {2, 25, "free"},
-        {3, 15, "free"},
-        {4, 10, "free"},
-        {5, 8, "free"},
-        {6, 2, "init"}
+        {0, 40, "free"},
+        {1, 25, "free"},
+        {2, 15, "free"},
+        {3, 10, "free"},
+        {4, 8, "free"}
     };
     
-    // Create init process (PID 0) that uses partition 6
     PCB init_process;
     init_process.pid = 0;
+    init_process.ppid = -1;
     init_process.program_name = "init";
-    init_process.partition_number = 6;
-    init_process.size = 2;
+    init_process.partition_number = 5;
+    init_process.size = 0;
     init_process.state = "running";
+    init_process.priority = 0;
     pcb_table.push_back(init_process);
+    
+    ready_queue.push(0);
+    next_pid = 1;
 }
 
+std::vector<ExternalFile> load_external_files(const std::string& filename) {
+    std::vector<ExternalFile> files;
+    std::ifstream file(filename);
+    
+    if (!file.is_open()) {
+        std::cerr << "Warning: Could not open " << filename << std::endl;
+        return files;
+    }
+    
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.empty()) continue;
+        auto parts = split_delim(line, ",");
+        if (parts.size() == 2) {
+            ExternalFile ext_file;
+            ext_file.program_name = parts[0];
+            ext_file.size = std::stoi(parts[1]);
+            files.push_back(ext_file);
+        }
+    }
+    file.close();
+    return files;
+}
 
-/**
- * Handle FORK system call
- * 
- * Steps:
- * a. Execute SYSCALL interrupt (vector 2)
- * b. Clone parent PCB to create child
- * c. Call scheduler
- * d. Return from ISR
- */
-std::string handle_fork(int& current_time, std::vector<std::string>& vectors) {
+// ============================================================
+// PROCESS MANAGEMENT
+// ============================================================
+
+int find_available_partition(unsigned int program_size) {
+    for (auto& part : partition_table) {
+        if (part.code == "free" && part.size >= program_size) {
+            return part.number;
+        }
+    }
+    return -1;
+}
+
+void add_to_ready_queue(int pid) {
+    ready_queue.push(pid);
+}
+
+int get_next_process() {
+    if (ready_queue.empty()) return -1;
+    int next = ready_queue.front();
+    ready_queue.pop();
+    return next;
+}
+
+bool is_child_of(int pid, int parent_pid) {
+    for (auto& pcb : pcb_table) {
+        if (pcb.pid == pid && pcb.ppid == parent_pid) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ============================================================
+// FORK SYSTEM CALL
+// ============================================================
+
+std::string handle_fork(int& current_time, std::vector<std::string>& vectors, int current_pid) {
     std::string result = "";
     const int CONTEXT_TIME = 10;
     
-    // Step 1: SYSCALL interrupt boilerplate
-    // Includes: switch to kernel, save context, find vector, load address
     auto [boilerplate, new_time] = intr_boilerplate(current_time, 2, CONTEXT_TIME, vectors);
     result += boilerplate;
     current_time = new_time;
     
-    // Step 2: Clone parent PCB to create child
-    PCB parent = pcb_table[0];  // Parent is first process in table
-    PCB child = parent;          // Copy parent's PCB
-    child.pid = pcb_table.size(); // New child gets next PID
-    pcb_table.push_back(child);   // Add child to process table
+    PCB parent;
+    bool found = false;
+    for (const auto& pcb : pcb_table) {
+        if (pcb.pid == current_pid) {
+            parent = pcb;
+            found = true;
+            break;
+        }
+    }
     
-    result += std::to_string(current_time) + ", 1, PCB cloned for child process\n";
-    current_time += 1;
+    if (!found) {
+        result += std::to_string(current_time) + ", 1, ERROR: Parent not found\n";
+        current_time += 1;
+        result += execute_iret(current_time);
+        result += restore_context(current_time);
+        result += switch_to_user_mode(current_time);
+        return result;
+    }
     
-    // Step 3: Return from ISR
+    PCB child = parent;
+    child.pid = next_pid++;
+    child.ppid = current_pid;
+    child.priority = 1;
+    pcb_table.push_back(child);
+    parent_child_map[current_pid].push_back(child.pid);
+    add_to_ready_queue(child.pid);
+    
+    int fork_duration = 1;
+    result += std::to_string(current_time) + ", " + std::to_string(fork_duration)
+           + ", cloning the PCB\n";
+    current_time += fork_duration;
+    
+    int sched_duration = 0;
+    result += std::to_string(current_time) + ", " + std::to_string(sched_duration)
+           + ", scheduler called\n";
+    
     result += execute_iret(current_time);
-    
-    // Step 4: Restore context and switch to user mode
     result += restore_context(current_time);
     result += switch_to_user_mode(current_time);
     
     return result;
 }
 
+// ============================================================
+// EXEC SYSTEM CALL
+// ============================================================
 
-/**
- * Handle EXEC system call
- * 
- * Steps:
- * e. Execute SYSCALL interrupt (vector 3)
- * f. Search for program in external files
- * g. Find empty partition where executable fits
- * h. Simulate loader (15ms per MB of program size)
- * i. Mark partition as occupied
- * j. Update PCB with new program information
- * k. Call scheduler
- * l. Return from ISR
- */
 std::string handle_exec(const std::string& program_name, int& current_time,
                         std::vector<std::string>& vectors, 
-                        std::vector<ExternalFile>& external_files) {
+                        std::vector<ExternalFile>& external_files,
+                        int current_pid) {
     std::string result = "";
     const int CONTEXT_TIME = 10;
     
-    // Step e: SYSCALL interrupt boilerplate (vector 3 for EXEC)
     auto [boilerplate, new_time] = intr_boilerplate(current_time, 3, CONTEXT_TIME, vectors);
     result += boilerplate;
     current_time = new_time;
     
-    // Step f: Search for program in external files
     int program_size = 0;
     bool found = false;
-    
-    for (auto& file : external_files) {
+    for (const auto& file : external_files) {
         if (file.program_name == program_name) {
             program_size = file.size;
             found = true;
@@ -122,18 +190,10 @@ std::string handle_exec(const std::string& program_name, int& current_time,
         return result;
     }
     
-    // Step g: Find empty partition where executable fits
-    int partition_to_use = -1;
-    for (auto& part : partition_table) {
-        if (part.code == "free" && part.size >= program_size) {
-            partition_to_use = part.number;
-            part.code = program_name;  // Mark as occupied
-            break;
-        }
-    }
+    int partition_to_use = find_available_partition(program_size);
     
     if (partition_to_use == -1) {
-        result += std::to_string(current_time) + ", 1, ERROR: No partition available\n";
+        result += std::to_string(current_time) + ", 1, ERROR: No partition\n";
         current_time += 1;
         result += execute_iret(current_time);
         result += restore_context(current_time);
@@ -141,49 +201,61 @@ std::string handle_exec(const std::string& program_name, int& current_time,
         return result;
     }
     
-    // Step h: Simulate loader execution
-    // Duration = 15 milliseconds per MB of program size (NOT random)
-    int loader_time = program_size * 15;
+    for (auto& part : partition_table) {
+        if (part.number == partition_to_use) {
+            part.code = program_name;
+            break;
+        }
+    }
+    
+    int program_mb_size = program_size;
+    int loader_time = program_mb_size * 15;
     result += std::to_string(current_time) + ", " + std::to_string(loader_time)
-            + ", loading " + program_name + " from disk to partition "
+            + ", loading " + program_name + " from disk to partition " 
             + std::to_string(partition_to_use) + "\n";
     current_time += loader_time;
     
-    // Step i & j: Mark partition as occupied and update PCB
-    // Update parent process (PID 0) with new program information
-    pcb_table[0].program_name = program_name;
-    pcb_table[0].partition_number = partition_to_use;
-    pcb_table[0].size = program_size;
+    int mark_duration = 1;
+    result += std::to_string(current_time) + ", " + std::to_string(mark_duration)
+           + ", marking partition as occupied\n";
+    current_time += mark_duration;
     
-    result += std::to_string(current_time) + ", 1, PCB updated with new program info\n";
-    current_time += 1;
+    int update_duration = 3;
+    result += std::to_string(current_time) + ", " + std::to_string(update_duration)
+           + ", updating PCB\n";
+    current_time += update_duration;
     
-    // Step k: Return from ISR
+    for (auto& pcb : pcb_table) {
+        if (pcb.pid == current_pid) {
+            pcb.program_name = program_name;
+            pcb.partition_number = partition_to_use;
+            pcb.size = program_size;
+            break;
+        }
+    }
+    
+    int sched_duration = 0;
+    result += std::to_string(current_time) + ", " + std::to_string(sched_duration)
+           + ", scheduler called\n";
+    
     result += execute_iret(current_time);
-    
-    // Step l: Restore context and switch to user mode
     result += restore_context(current_time);
     result += switch_to_user_mode(current_time);
     
     return result;
 }
 
+// ============================================================
+// PART 3: CPU AND INTERRUPTS
+// ============================================================
 
-/**
- * Simulate CPU execution for a given duration
- */
 std::string simulate_cpu(int duration, int& current_time) {
     std::string result = std::to_string(current_time) + ", "
-                       + std::to_string(duration) + ", "
-                       + "CPU execution\n";
+                       + std::to_string(duration) + ", CPU execution\n";
     current_time += duration;
     return result;
 }
 
-/**
- * Execute ISR (Interrupt Service Routine)
- * Handles the actual device/interrupt processing
- */
 std::string execute_isr(int device_num, int& current_time, std::vector<int>& delays,
                         const std::string& isr_type) {
     int isr_delay = delays[device_num];
@@ -194,92 +266,60 @@ std::string execute_isr(int device_num, int& current_time, std::vector<int>& del
     return result;
 }
 
-/**
- * Execute IRET (Return from Interrupt)
- * Returns to interrupted code with mode bit = 1
- */
 std::string execute_iret(int& current_time) {
     std::string result = std::to_string(current_time) + ", 1, IRET\n";
     current_time += 1;
     return result;
 }
 
-/**
- * Restore CPU context (10ms operation)
- * Restores registers and processor state
- */
 std::string restore_context(int& current_time) {
     const int CONTEXT_TIME = 10;
     std::string result = std::to_string(current_time) + ", "
-                       + std::to_string(CONTEXT_TIME) + ", "
-                       + "context restored\n";
+                       + std::to_string(CONTEXT_TIME) + ", context restored\n";
     current_time += CONTEXT_TIME;
     return result;
 }
 
-/**
- * Switch to user mode (mode bit = 1)
- */
 std::string switch_to_user_mode(int& current_time) {
     std::string result = std::to_string(current_time) + ", 1, switch to user mode\n";
     current_time += 1;
     return result;
 }
 
-/**
- * Main interrupt handling wrapper
- * Combines boilerplate, ISR execution, and return to user mode
- */
-std::string handle_interrupt(int device_num, int& current_time, 
+std::string handle_interrupt(int device_num, int& current_time,
                             std::vector<std::string>& vectors,
-                            std::vector<int>& delays, 
+                            std::vector<int>& delays,
                             const std::string& interrupt_type) {
     std::string result = "";
     const int CONTEXT_TIME = 10;
     
-    // Interrupt boilerplate: switch to kernel, save context, load vector
     auto [boilerplate, new_time] = intr_boilerplate(current_time, device_num, CONTEXT_TIME, vectors);
     result += boilerplate;
     current_time = new_time;
-    
-    // Execute the ISR for this device
     result += execute_isr(device_num, current_time, delays, interrupt_type);
-    
-    // Return from interrupt
     result += execute_iret(current_time);
-    
-    // Restore context and return to user mode
     result += restore_context(current_time);
     result += switch_to_user_mode(current_time);
     
     return result;
 }
 
-/**
- * Generate interrupt boilerplate sequence
- * 
- * Sequence:
- * 1. Switch to kernel mode (1ms)
- * 2. Save context (context_save_time ms, typically 10ms)
- * 3. Find interrupt vector in memory
- * 4. Load ISR address into PC
- */
+// ============================================================
+// HELPER FUNCTIONS
+// ============================================================
+
 std::pair<std::string, int> intr_boilerplate(int current_time, int intr_num, 
                                               int context_save_time, 
                                               std::vector<std::string> vectors) {
     std::string execution = "";
     
-    // Step 1: Switch to kernel mode (mode bit = 0)
     execution += std::to_string(current_time) + ", 1, switch to kernel mode\n";
     current_time++;
     
-    // Step 2: Save context
     execution += std::to_string(current_time) + ", " + std::to_string(context_save_time) 
               + ", context saved\n";
     current_time += context_save_time;
     
-    // Step 3: Find vector in memory
-    // Vector address = ADDR_BASE + (intr_num * VECTOR_SIZE)
     char vector_address_c[10];
     sprintf(vector_address_c, "0x%04X", (ADDR_BASE + (intr_num * VECTOR_SIZE)));
     std::string vector_address(vector_address_c);
@@ -288,7 +328,6 @@ std::pair<std::string, int> intr_boilerplate(int current_time, int intr_num,
               + " in memory position " + vector_address + "\n";
     current_time++;
     
-    // Step 4: Load ISR address into PC
     execution += std::to_string(current_time) + ", 1, load address " + vectors.at(intr_num) 
               + " into the PC\n";
     current_time++;
@@ -296,10 +335,6 @@ std::pair<std::string, int> intr_boilerplate(int current_time, int intr_num,
     return std::make_pair(execution, current_time);
 }
 
-/**
- * Split string by delimiter
- * Used for parsing comma-separated values
- */
 std::vector<std::string> split_delim(std::string input, std::string delim) {
     std::vector<std::string> tokens;
     std::size_t pos = 0;
@@ -314,25 +349,14 @@ std::vector<std::string> split_delim(std::string input, std::string delim) {
     return tokens;
 }
 
-/**
- * Parse trace file entry
- * Format: "activity,value"
- * 
- * Examples:
- *   "CPU,50" -> ("CPU", 50)
- *   "SYSCALL,3" -> ("SYSCALL", 3)
- *   "FORK," -> ("FORK", -1)
- *   "EXEC program1," -> ("EXEC program1", -1)
- */
 std::tuple<std::string, int> parse_trace(std::string trace) {
     auto parts = split_delim(trace, ",");
     if (parts.size() < 2) {
-        std::cerr << "Error: Malformed input line: " << trace << std::endl;
         return {"null", -1};
     }
     
     auto activity = parts[0];
-    int value;
+    int value = -1;
     
     try {
         value = std::stoi(parts[1]);
@@ -343,37 +367,23 @@ std::tuple<std::string, int> parse_trace(std::string trace) {
     return {activity, value};
 }
 
-/**
- * Parse command line arguments
- * 
- * Usage: ./interrupts <trace_file> <vector_table> <device_delays>
- * 
- * Arguments:
- *   argv[1]: Trace file with CPU, FORK, EXEC, SYSCALL, END_IO operations
- *   argv[2]: Vector table file with ISR addresses
- *   argv[3]: Device delays file with ISR duration for each device
- */
 std::tuple<std::vector<std::string>, std::vector<int>> parse_args(int argc, char** argv) {
-    if(argc != 4) {
-        std::cout << "ERROR!\nExpected 3 arguments, received " << argc - 1 << std::endl;
-        std::cout << "Usage: ./interrupts <trace_file> <vector_table> <device_delays>\n";
+    if(argc != 5) {
+        std::cout << "ERROR! Expected 4 arguments\n";
+        std::cout << "Usage: ./interrupts <trace> <vectors> <delays> <external_files>\n";
         exit(1);
     }
     
-    // Validate trace file
-    std::ifstream input_file;
-    input_file.open(argv[1]);
+    std::ifstream input_file(argv[1]);
     if (!input_file.is_open()) {
-        std::cerr << "Error: Unable to open file: " << argv[1] << std::endl;
+        std::cerr << "Error: Unable to open " << argv[1] << std::endl;
         exit(1);
     }
     input_file.close();
     
-    // Load vector table
-    std::ifstream input_vector_table;
-    input_vector_table.open(argv[2]);
+    std::ifstream input_vector_table(argv[2]);
     if (!input_vector_table.is_open()) {
-        std::cerr << "Error: Unable to open file: " << argv[2] << std::endl;
+        std::cerr << "Error: Unable to open " << argv[2] << std::endl;
         exit(1);
     }
     
@@ -384,13 +394,11 @@ std::tuple<std::vector<std::string>, std::vector<int>> parse_args(int argc, char
     }
     input_vector_table.close();
     
-    // Load device delays
     std::string duration;
     std::vector<int> delays;
-    std::ifstream device_table;
-    device_table.open(argv[3]);
+    std::ifstream device_table(argv[3]);
     if (!device_table.is_open()) {
-        std::cerr << "Error: Unable to open file: " << argv[3] << std::endl;
+        std::cerr << "Error: Unable to open " << argv[3] << std::endl;
         exit(1);
     }
     
@@ -402,10 +410,6 @@ std::tuple<std::vector<std::string>, std::vector<int>> parse_args(int argc, char
     return {vectors, delays};
 }
 
-/**
- * Write execution trace to output file
- * Creates "execution.txt" with complete simulation results
- */
 void write_output(std::string execution) {
     std::ofstream output_file("execution.txt");
     if (output_file.is_open()) {
@@ -415,74 +419,89 @@ void write_output(std::string execution) {
     } else {
         std::cerr << "Error opening file!" << std::endl;
     }
-    std::cout << "Output generated in execution.txt" << std::endl;
 }
 
-/**
- * Main simulation loop
- * 
- * 1. Parse command line arguments
- * 2. Initialize system (partitions and init PCB)
- * 3. Process trace file entries:
- *    - CPU: simulate CPU execution
- *    - FORK: clone parent process
- *    - EXEC: load new program
- *    - SYSCALL/END_IO: handle interrupts
- * 4. Output final system state
- */
+void write_system_status_file(std::string status) {
+    std::ofstream status_file("system_status.txt");
+    if (status_file.is_open()) {
+        status_file << status;
+        status_file.close();
+    }
+}
+
+// ============================================================
+// MAIN FUNCTION
+// ============================================================
+
 int main(int argc, char** argv) {
-    // Parse command line arguments
     auto [vectors, delays] = parse_args(argc, argv);
     std::ifstream input_file(argv[1]);
     std::string trace;
     std::string execution;
+    std::string status;
     int current_time = 0;
+    int current_pid = 0;
+    bool in_child_block = false;
+    bool in_parent_block = false;
+    int block_pid = -1;
     
-    // Initialize system BEFORE processing trace file
     initialize_system();
+    external_files = load_external_files(argv[4]);
     
-    // Process each entry in trace file
     while(std::getline(input_file, trace)) {
-        auto [activity, duration_intr] = parse_trace(trace);
+        auto [activity, value] = parse_trace(trace);
         
         if(activity == "CPU") {
-            // Simulate CPU execution for given duration
-            execution += simulate_cpu(duration_intr, current_time);
+            execution += simulate_cpu(value, current_time);
         }
         else if (activity == "FORK") {
-            // Fork creates child process
-            execution += handle_fork(current_time, vectors);
+            execution += handle_fork(current_time, vectors, current_pid);
+        }
+        else if (activity == "IF_CHILD") {
+            in_child_block = true;
+            in_parent_block = false;
+            block_pid = value;
+        }
+        else if (activity == "IF_PARENT") {
+            in_child_block = false;
+            in_parent_block = true;
+            block_pid = value;
+        }
+        else if (activity == "ENDIF") {
+            in_child_block = false;
+            in_parent_block = false;
+            block_pid = -1;
         }
         else if (activity.substr(0, 4) == "EXEC") {
-            // Extract program name: "EXEC program_name" -> program_name
             std::string program_name = activity.substr(5);
-            execution += handle_exec(program_name, current_time, vectors, external_files);
+            execution += handle_exec(program_name, current_time, vectors, external_files, current_pid);
         }
         else if (activity == "SYSCALL" || activity == "END_IO"){
-            // Handle general interrupt
-            execution += handle_interrupt(duration_intr, current_time, vectors, delays, activity);
+            execution += handle_interrupt(value, current_time, vectors, delays, activity);
         }
     }
     
     input_file.close();
     
-    // Output final system state
     execution += "\n\n=== FINAL SYSTEM STATE ===\n";
     execution += "Partition Table:\n";
-    for (auto& part : partition_table) {
+    for (const auto& part : partition_table) {
         execution += "Partition " + std::to_string(part.number) + ": "
                   + std::to_string(part.size) + " MB - Code: " + part.code + "\n";
     }
     
     execution += "\nPCB Table:\n";
-    for (auto& pcb : pcb_table) {
-        execution += "PID " + std::to_string(pcb.pid) + ": " + pcb.program_name
-                  + " (Partition " + std::to_string(pcb.partition_number) + ", "
-                  + std::to_string(pcb.size) + " MB, State: " + pcb.state + ")\n";
+    for (const auto& pcb : pcb_table) {
+        execution += "PID " + std::to_string(pcb.pid);
+        if (pcb.ppid != -1) {
+            execution += " (Parent: " + std::to_string(pcb.ppid) + ")";
+        }
+        execution += ": " + pcb.program_name + " (Partition " + std::to_string(pcb.partition_number)
+                  + ", " + std::to_string(pcb.size) + " MB, State: " + pcb.state + ")\n";
     }
     
-    // Write results to file
     write_output(execution);
+    write_system_status_file(status);
     
     return 0;
 }

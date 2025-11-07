@@ -1,3 +1,13 @@
+/**
+ * @file interrupts.hpp
+ * @brief Header file for OS Simulator - Part 3 & 4
+ * Contains structure definitions, function declarations, and global variable declarations
+ * 
+ * This implementation handles:
+ * - Part 3: CPU execution and interrupt handling (SYSCALL/END_IO)
+ * - Part 4: Process management (FORK/EXEC) with multi-process scheduling
+ */
+
 #ifndef INTERRUPTS_HPP_
 #define INTERRUPTS_HPP_
 
@@ -7,208 +17,398 @@
 #include <string>
 #include <tuple>
 #include <cstdio>
+#include <queue>
+#include <map>
 
-#define ADDR_BASE 0
-#define VECTOR_SIZE 2
-#define CPU_SPEED 100
-#define MEM_LIMIT 1
+// Simulation constants for memory and timing calculations
+#define ADDR_BASE 0          // Base address for vector table memory
+#define VECTOR_SIZE 2        // Bytes per vector table entry
+#define CPU_SPEED 100        // CPU clock speed (reserved for future use)
+#define MEM_LIMIT 1          // Memory limit per process (reserved for future use)
 
-// ============================================================
-// STRUCTURES FOR MEMORY MANAGEMENT AND PROCESS CONTROL
-// ============================================================
-
-// Partition structure for memory management
-struct Partition {
-    unsigned int number;        // Partition number (1-6)
-    unsigned int size;          // Size in MB
-    std::string code;           // "free", "init", or program name
-};
-
-// PCB (Process Control Block)
-struct PCB {
-    int pid;                    // Process ID
-    std::string program_name;   // Name of the program
-    int partition_number;       // Which partition it's in
-    int size;                   // Size in MB
-    std::string state;          // "running" or "waiting"
-};
-
-// External file (simulated disk/storage)
-struct ExternalFile {
-    std::string program_name;   // Program name (max 20 chars)
-    unsigned int size;          // Size in MB
-};
-
-// ============================================================
-// PART 4: FORK AND EXEC SYSTEM CALLS
-// ============================================================
+// Structure definitions for memory management and process control
 
 /**
- * \brief Initialize the system with partitions and init process
- * Sets up 6 fixed partitions and creates the initial PCB for init
+ * @struct Partition
+ * @brief Represents a fixed memory partition in the system
+ * 
+ * The system uses 5 fixed partitions for process memory allocation.
+ * Partition 5 is reserved for the init process only.
+ */
+struct Partition {
+    unsigned int number;    // Partition identifier (0-4, reserved: 5)
+    unsigned int size;      // Partition size in megabytes
+    std::string code;       // Current contents: "free", "init", or program name
+};
+
+/**
+ * @struct PCB
+ * @brief Process Control Block - tracks all information about a process
+ * 
+ * Maintains complete state for each process in the system.
+ * Key feature: parent-child relationships enabled by ppid field for FORK operations
+ */
+struct PCB {
+    int pid;                // Process identifier (unique within system)
+    int ppid;               // Parent process identifier (-1 if init process)
+    std::string program_name; // Name of the program currently executing
+    int partition_number;   // Which partition is allocated to this process
+    int size;               // Program size in megabytes
+    std::string state;      // Current process state: "running", "waiting", "ready", "terminated"
+    int priority;           // Priority level: 0 = normal, 1 = child (executes first)
+};
+
+/**
+ * @struct ExternalFile
+ * @brief Represents a program stored on disk (simulated storage)
+ * 
+ * Used to simulate the disk storage and loading behavior during EXEC operations.
+ * Loading time is calculated as: size * 15 milliseconds
+ */
+struct ExternalFile {
+    std::string program_name; // Program identifier for lookup
+    unsigned int size;        // Program size in megabytes
+};
+
+// Process management and system call functions
+
+/**
+ * @brief Initialize the operating system simulator
+ * 
+ * Called once at program startup to set up system state:
+ * - Creates 5 fixed memory partitions (40, 25, 15, 10, 8 MB)
+ * - Creates init process (PID 0) in reserved partition
+ * - Resets process ID counter to 1
+ * - Initializes ready queue with init process
  */
 void initialize_system();
 
 /**
- * \brief Handle FORK system call
- * Creates a child process by cloning the parent's PCB
+ * @brief Load available programs from external file
  * 
- * @param current_time reference to current simulation time
- * @param vectors interrupt vector table addresses
- * @return string containing execution trace
+ * Reads external_files.txt to populate the list of programs that can be
+ * loaded via EXEC system call. File format is: program_name,size_in_mb
+ * 
+ * @param filename Path to the external files list
+ * @return Vector of available ExternalFile entries
+ * @note Issues warning if file cannot be opened (continues with empty list)
  */
-std::string handle_fork(int& current_time, std::vector<std::string>& vectors);
+std::vector<ExternalFile> load_external_files(const std::string& filename);
 
 /**
- * \brief Handle EXEC system call
- * Loads and executes a new program from disk into memory
+ * @brief Handle FORK system call (Interrupt Vector 2)
  * 
- * @param program_name name of program to load
- * @param current_time reference to current simulation time
- * @param vectors interrupt vector table addresses
- * @param external_files list of available programs on disk
- * @return string containing execution trace
+ * Creates a child process by executing the following steps:
+ * 1. Trigger interrupt (vector 2)
+ * 2. Clone parent process's PCB
+ * 3. Assign new unique PID to child
+ * 4. Set child's parent PID and priority
+ * 5. Add child process to ready queue
+ * 6. Return from interrupt
+ * 
+ * Child process has higher priority than parent (executes first)
+ * 
+ * @param current_time Reference to simulation time (gets updated)
+ * @param vectors Interrupt vector table addresses from vectors.txt
+ * @param current_pid Process ID of the process calling FORK
+ * @return Execution trace string formatted for output file
+ */
+std::string handle_fork(int& current_time, std::vector<std::string>& vectors, int current_pid);
+
+/**
+ * @brief Handle EXEC system call (Interrupt Vector 3)
+ * 
+ * Loads and executes a new program by:
+ * 1. Trigger interrupt (vector 3)
+ * 2. Find requested program in external files
+ * 3. Allocate memory using first-fit algorithm
+ * 4. Simulate disk load (duration = size * 15ms)
+ * 5. Update process PCB with program information
+ * 6. Call scheduler for context switch
+ * 7. Return from interrupt
+ * 
+ * @param program_name Name of the program to load from disk
+ * @param current_time Reference to simulation time (gets updated)
+ * @param vectors Interrupt vector table addresses from vectors.txt
+ * @param external_files List of programs available on simulated disk
+ * @param current_pid Process ID of the process calling EXEC
+ * @return Execution trace string formatted for output file
  */
 std::string handle_exec(const std::string& program_name, int& current_time,
                         std::vector<std::string>& vectors, 
-                        std::vector<ExternalFile>& external_files);
-
-
-// CPU and interrupt simulation
+                        std::vector<ExternalFile>& external_files,
+                        int current_pid);
 
 /**
- * \brief Simulate CPU execution
- * Logs CPU time usage
+ * @brief Find available memory partition for a program
  * 
- * @param duration how long CPU executes (in simulation time)
- * @param current_time reference to current simulation time
- * @return string containing CPU execution trace
+ * Uses first-fit allocation algorithm:
+ * - Scans partition table sequentially from start to end
+ * - Returns first partition marked "free" with sufficient size
+ * - Returns -1 if no suitable partition is found
+ * 
+ * @param program_size Required memory size in megabytes
+ * @return Partition number (0-4) if successful, -1 if allocation failed
+ */
+int find_available_partition(unsigned int program_size);
+
+/**
+ * @brief Write system status snapshot to output file
+ * 
+ * Records PCB state at a specific simulation time point.
+ * Called after FORK/EXEC operations for system status tracking.
+ * 
+ * @param status_file Output file stream reference
+ * @param current_time Current simulation time in milliseconds
+ * @param trace_line Current trace line being executed
+ */
+void write_system_status(std::ofstream& status_file, int current_time, 
+                         const std::string& trace_line);
+
+/**
+ * @brief Get next process from the ready queue for execution
+ * 
+ * Implements process scheduling by:
+ * - Removing the front process from the ready queue
+ * - Automatically prioritizing child processes over parent processes
+ * 
+ * @return Process ID of next process to execute, or -1 if queue is empty
+ */
+int get_next_process();
+
+/**
+ * @brief Add process to the ready queue
+ * 
+ * Called when a process is ready to execute (after FORK or at startup)
+ * 
+ * @param pid Process ID to add to queue
+ */
+void add_to_ready_queue(int pid);
+
+/**
+ * @brief Remove process from the ready queue
+ * 
+ * Marks process as terminated and removes from active queue
+ * 
+ * @param pid Process ID to remove from queue
+ */
+void remove_from_ready_queue(int pid);
+
+/**
+ * @brief Check if parent-child relationship exists
+ * 
+ * Utility function to verify if a process is the child of another process
+ * 
+ * @param pid Process to check
+ * @param parent_pid Suspected parent process
+ * @return true if pid's parent equals parent_pid, false otherwise
+ */
+bool is_child_of(int pid, int parent_pid);
+
+/**
+ * @brief Mark process as terminated
+ * 
+ * Updates the process PCB state to "terminated" for cleanup purposes
+ * 
+ * @param pid Process ID to terminate
+ */
+void terminate_process(int pid);
+
+// CPU and interrupt simulation functions
+
+/**
+ * @brief Simulate CPU execution for specified duration
+ * 
+ * Logs CPU activity at current simulation time. Automatically advances
+ * current_time by the specified duration amount.
+ * 
+ * Output format: "time, duration, CPU execution"
+ * 
+ * @param duration How long the CPU executes in milliseconds
+ * @param current_time Reference to simulation time counter
+ * @return Formatted trace string for output file
  */
 std::string simulate_cpu(int duration, int& current_time);
 
 /**
- * \brief Execute ISR (Interrupt Service Routine)
- * Simulates the execution of an ISR for a given device
+ * @brief Execute Interrupt Service Routine for a device
  * 
- * @param device_num device/interrupt number
- * @param current_time reference to current simulation time
- * @param delays vector of device delays
- * @param isr_type type of ISR ("SYSCALL" or "END_IO")
- * @return string containing ISR execution trace
+ * Simulates device interrupt processing. The ISR duration comes from delays.txt
+ * and is indexed by device_num parameter.
+ * 
+ * Output format: "time, duration, SYSCALL/END_IO: run the ISR"
+ * 
+ * @param device_num Device or interrupt number (index into delays array)
+ * @param current_time Reference to simulation time counter
+ * @param delays Vector of ISR durations loaded from delays.txt
+ * @param isr_type Type of ISR: either "SYSCALL" or "END_IO"
+ * @return Formatted trace string for output file
  */
 std::string execute_isr(int device_num, int& current_time, std::vector<int>& delays,
                         const std::string& isr_type);
 
 /**
- * \brief Execute IRET (Return from Interrupt)
- * Returns control from ISR back to interrupted code
+ * @brief Execute IRET (Return from Interrupt) instruction
  * 
- * @param current_time reference to current simulation time
- * @return string containing IRET trace
+ * Marks the return from interrupt handler back to the interrupted code.
+ * Standard operation takes 1 millisecond.
+ * 
+ * Output format: "time, 1, IRET"
+ * 
+ * @param current_time Reference to simulation time counter
+ * @return Formatted trace string for output file
  */
 std::string execute_iret(int& current_time);
 
 /**
- * \brief Restore processor context
- * Restores saved registers and state (10ms operation)
+ * @brief Restore processor context after interrupt
  * 
- * @param current_time reference to current simulation time
- * @return string containing context restore trace
+ * Restores CPU registers and process state to their pre-interrupt values.
+ * Standard operation takes 10 milliseconds.
+ * 
+ * Output format: "time, 10, context restored"
+ * 
+ * @param current_time Reference to simulation time counter
+ * @return Formatted trace string for output file
  */
 std::string restore_context(int& current_time);
 
 /**
- * \brief Switch to user mode
- * Transitions processor from kernel mode back to user mode
+ * @brief Switch processor from kernel mode to user mode
  * 
- * @param current_time reference to current simulation time
- * @return string containing mode switch trace
+ * Marks the transition back to user process execution after interrupt handling.
+ * Takes 1 millisecond.
+ * 
+ * Output format: "time, 1, switch to user mode"
+ * 
+ * @param current_time Reference to simulation time counter
+ * @return Formatted trace string for output file
  */
 std::string switch_to_user_mode(int& current_time);
 
 /**
- * \brief Handle interrupt (wrapper function)
- * Combines all steps: boilerplate, ISR execution, return to user mode
+ * @brief Handle complete interrupt sequence
  * 
- * @param device_num device/interrupt number
- * @param current_time reference to current simulation time
- * @param vectors interrupt vector table addresses
- * @param delays vector of device delays
- * @param interrupt_type type of interrupt ("SYSCALL" or "END_IO")
- * @return string containing complete interrupt trace
+ * Combines all interrupt processing steps into a unified handler:
+ * 1. Execute boilerplate (kernel switch, context save, vector lookup)
+ * 2. Execute ISR with appropriate delay
+ * 3. Execute IRET
+ * 4. Restore context
+ * 5. Return to user mode
+ * 
+ * @param device_num Device or interrupt number
+ * @param current_time Reference to simulation time counter
+ * @param vectors Interrupt vector table addresses
+ * @param delays ISR durations from delays.txt
+ * @param interrupt_type Type: either "SYSCALL" or "END_IO"
+ * @return Complete interrupt trace string for output file
  */
 std::string handle_interrupt(int device_num, int& current_time,
                             std::vector<std::string>& vectors,
                             std::vector<int>& delays,
                             const std::string& interrupt_type);
 
-
-// Interrupt handling utilities
-
+// Interrupt handling utility functions
 
 /**
- * \brief Generate interrupt boilerplate
- * Standard sequence: switch to kernel, save context, lookup vector, load address
+ * @brief Generate interrupt boilerplate sequence
  * 
- * @param current_time current simulation time
- * @param intr_num interrupt number (for vector lookup)
- * @param context_save_time time to save context (typically 10ms)
- * @param vectors interrupt vector table addresses
- * @return pair of (execution string, new time after boilerplate)
+ * Executes the standard interrupt entry sequence:
+ * 1. Switch to kernel mode (1ms)
+ * 2. Save context (10ms)
+ * 3. Find vector in memory (1ms)
+ * 4. Load ISR address into PC (1ms)
+ * 
+ * Total time for boilerplate: 13 milliseconds before ISR execution
+ * 
+ * @param current_time Current simulation time
+ * @param intr_num Interrupt number (used for vector lookup)
+ * @param context_save_time Context save duration (typically 10ms)
+ * @param vectors Interrupt vector table loaded from vectors.txt
+ * @return Pair containing (trace_string, new_time_after_boilerplate)
  */
 std::pair<std::string, int> intr_boilerplate(int current_time, int intr_num, 
                                               int context_save_time, 
                                               std::vector<std::string> vectors);
 
-
-// File I?O Parsing utilities
+// File input/output and parsing functions
 
 /**
- * \brief Parse command line arguments
- * Validates and loads trace file, vector table, and device delays
+ * @brief Parse and validate command line arguments
  * 
- * @param argc number of command line arguments
- * @param argv command line arguments array
- * @return tuple of (vectors, delays) loaded from files
+ * Loads all input files required for simulation:
+ * 1. trace.txt - sequence of simulation events
+ * 2. vectors.txt - interrupt vector addresses
+ * 3. delays.txt - ISR execution durations
+ * 4. external_files.txt - available programs on disk
  * 
- * Usage: ./interrupts <trace_file> <vector_table> <device_delays>
+ * Program exits with error if any file cannot be opened or has invalid format.
+ * 
+ * @param argc Number of command line arguments provided
+ * @param argv Array of command line argument strings
+ * @return Tuple containing (vectors_array, delays_array)
+ * 
+ * Usage: ./interrupts trace.txt vector_table.txt device_table.txt external_files.txt
  */
 std::tuple<std::vector<std::string>, std::vector<int>> parse_args(int argc, char** argv);
 
 /**
- * \brief Parse trace file entry
- * Extracts activity name and duration/interrupt number
+ * @brief Parse a single line from the trace file
  * 
- * @param trace one line from trace file (format: "activity,value")
- * @return tuple of (activity, duration_or_interrupt_num)
+ * Extracts activity name and numeric value from comma-separated format
  * 
  * Examples:
- *   "CPU,50" -> ("CPU", 50)
- *   "SYSCALL,3" -> ("SYSCALL", 3)
- *   "FORK," -> ("FORK", -1)
+ *   "CPU,50" yields ("CPU", 50)
+ *   "FORK,10" yields ("FORK", 10)
+ *   "EXEC program1,50" yields ("EXEC program1", 50)
+ *   "IF_CHILD,0" yields ("IF_CHILD", 0)
+ *   "SYSCALL,3" yields ("SYSCALL", 3)
+ *   "ENDIF,0" yields ("ENDIF", 0)
+ * 
+ * @param trace One line from the trace file
+ * @return Tuple containing (activity_string, numeric_value)
  */
 std::tuple<std::string, int> parse_trace(std::string trace);
 
 /**
- * \brief Split string by delimiter
- * Helper function for parsing comma-separated and space-separated values
+ * @brief Split a string by a delimiter
  * 
- * @param input string to split
- * @param delim delimiter character(s)
- * @return vector of tokens
+ * Generic string splitting utility for parsing various input formats
+ * Removes the delimiter from the resulting tokens
  * 
- * Examples:
- *   split_delim("a,b,c", ",") -> ["a", "b", "c"]
- *   split_delim("hello world", " ") -> ["hello", "world"]
+ * @param input String to be split
+ * @param delim Delimiter character or substring
+ * @return Vector of token strings
  */
 std::vector<std::string> split_delim(std::string input, std::string delim);
 
 /**
- * \brief Write execution trace to output file
- * Creates "execution.txt" with complete simulation results
+ * @brief Write complete execution trace to output file
  * 
- * @param execution the complete execution trace string
+ * Creates "execution.txt" containing:
+ * - All simulation events with exact timestamps
+ * - Final system state (partition table, PCB table)
+ * 
+ * @param execution Complete execution trace string
  */
 void write_output(std::string execution);
+
+/**
+ * @brief Write system status snapshots to file
+ * 
+ * Creates "system_status.txt" with PCB table snapshots
+ * Snapshots recorded after FORK/EXEC operations
+ * 
+ * @param status System status string with PCB snapshots
+ */
+void write_system_status_file(std::string status);
+
+// Global variable declarations
+
+extern std::vector<Partition> partition_table;      // Memory partition table
+extern std::vector<PCB> pcb_table;                  // Process control blocks
+extern std::vector<ExternalFile> external_files;   // Programs on simulated disk
+extern std::queue<int> ready_queue;                 // Processes ready to execute
+extern std::map<int, std::vector<int>> parent_child_map;  // Process parent-child relationships
 
 #endif

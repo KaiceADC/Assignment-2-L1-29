@@ -386,7 +386,7 @@ std::tuple<std::vector<std::string>, std::vector<int>> parse_args(int argc, char
 }
 
 void write_output(std::string execution) {
-    std::ofstream output_file("output_files/execution.txt");
+    std::ofstream output_file("execution.txt");
     if (output_file.is_open()) {
         output_file << execution;
         output_file.close();
@@ -395,7 +395,7 @@ void write_output(std::string execution) {
 }
 
 void write_system_status_file(std::string status) {
-    std::ofstream status_file("output_files/system_status.txt");
+    std::ofstream status_file("system_status.txt");
     if (status_file.is_open()) {
         status_file << status;
         status_file.close();
@@ -410,6 +410,8 @@ int main(int argc, char** argv) {
     std::string status;
     int current_time = 0;
     int current_pid = 0;
+    bool in_child_block = false;
+    bool in_parent_block = false;
     
     initialize_system();
     external_files = load_external_files(argv[4]);
@@ -417,8 +419,40 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < std::numeric_limits<size_t>::max(); i++) {
         if (!std::getline(input_file, trace)) break;
         
+        // Trim whitespace
+        trace.erase(trace.find_last_not_of(" \n\r\t") + 1);
+        trace = trace.substr(trace.find_first_not_of(" \n\r\t"));
+        
         auto [activity, value] = parse_trace(trace);
         
+        // === HANDLE BLOCK MARKERS ===
+        if (activity == "IF_CHILD") {
+            in_child_block = true;
+            in_parent_block = false;
+            continue;
+        }
+        if (activity == "IF_PARENT") {
+            in_child_block = false;
+            in_parent_block = true;
+            
+            // Transition: mark child as terminated and switch to parent
+            for (auto& pcb : pcb_table) {
+                if (pcb.pid == current_pid && current_pid != 0) {
+                    pcb.state = "terminated";
+                    break;
+                }
+            }
+            current_pid = 0;
+            
+            continue;
+        }
+        if (activity == "ENDIF") {
+            in_child_block = false;
+            in_parent_block = false;
+            continue;
+        }
+        
+        // === FORK ===
         if (activity == "FORK") {
             execution += handle_fork(current_time, vectors, current_pid);
             
@@ -438,8 +472,8 @@ int main(int argc, char** argv) {
             status += "| PID | program name | partition number | size | state   |\n";
             status += "+-----+--------------+------------------+------+---------+\n";
             
-            for (int i = pcb_table.size() - 1; i >= 0; i--) {
-                const auto& pcb = pcb_table[i];
+            for (int j = (int)pcb_table.size() - 1; j >= 0; j--) {
+                const auto& pcb = pcb_table[j];
                 status += "| " + std::to_string(pcb.pid) + " | " + pcb.program_name 
                     + " | " + std::to_string(pcb.partition_number) + " | " 
                     + std::to_string(pcb.size) + " | " + pcb.state + " |\n";
@@ -447,148 +481,41 @@ int main(int argc, char** argv) {
             status += "+-----+--------------+------------------+------+---------+\n";
             
             current_pid = child_pid;
-            bool child_done = false;
-            
-            while (!child_done && std::getline(input_file, trace)) {
-                auto [child_activity, child_value] = parse_trace(trace);
-                
-                if (child_activity == "IF_PARENT") {
-                    child_done = true;
-                    
-                    // Remove child from PCB table (DO NOT free partition)
-                    for (auto it = pcb_table.begin(); it != pcb_table.end(); ++it) {
-                        if (it->pid == current_pid) {
-                            pcb_table.erase(it);
-                            break;
-                        }
-                    }
-                    
-                    current_pid = 0;
-                    break;
-                }
-                
-                if (child_activity == "CPU") {
-                    execution += simulate_cpu(child_value, current_time);
-                }
-                else if (child_activity.size() >= 4 && child_activity.substr(0, 4) == "EXEC") {
-                    std::string program_name = child_activity.substr(5);
-                    
-                    for (auto& pcb : pcb_table) {
-                        if (pcb.pid == current_pid) {
-                            pcb.state = "running";
-                        } else if (pcb.pid == 0) {
-                            pcb.state = "waiting";
-                        }
-                    }
-                    
-                    execution += handle_exec(program_name, child_value, current_time, vectors, external_files, current_pid);
-                    
-                    // Take snapshot BEFORE CPU burst
-                    status += "\ntime: " + std::to_string(current_time) + "; current trace: EXEC " + program_name + ", " + std::to_string(child_value) + "\n";
-                    status += "+-----+--------------+------------------+------+---------+\n";
-                    status += "| PID | program name | partition number | size | state   |\n";
-                    status += "+-----+--------------+------------------+------+---------+\n";
-                    
-                    for (int i = pcb_table.size() - 1; i >= 0; i--) {
-                        const auto& pcb = pcb_table[i];
-                        status += "| " + std::to_string(pcb.pid) + " | " + pcb.program_name 
-                            + " | " + std::to_string(pcb.partition_number) + " | " 
-                            + std::to_string(pcb.size) + " | " + pcb.state + " |\n";
-                    }
-                    status += "+-----+--------------+------------------+------+---------+\n";
-                    
-                    // Add CPU burst AFTER snapshot
-                    if (program_name == "program1") {
-                        execution += std::to_string(current_time) + ", 100, CPU Burst  //executing the contents of program1, child done\n";
-                        current_time += 100;
-                    }
-                }
-                else if (child_activity == "SYSCALL" || child_activity == "END_IO") {
-                    execution += handle_interrupt(child_value, current_time, vectors, delays, child_activity);
-                }
-            }
         }
-        else if (activity == "IF_PARENT") {
-            while (std::getline(input_file, trace)) {
-                auto [parent_activity, parent_value] = parse_trace(trace);
-                
-                if (parent_activity == "ENDIF") {
-                    break;
-                }
-                
-                if (parent_activity == "CPU") {
-                    execution += simulate_cpu(parent_value, current_time);
-                }
-                else if (parent_activity.size() >= 4 && parent_activity.substr(0, 4) == "EXEC") {
-                    std::string program_name = parent_activity.substr(5);
-                    
-                    for (auto& pcb : pcb_table) {
-                        if (pcb.pid == 0) {
-                            pcb.state = "running";
-                        }
-                    }
-                    
-                    execution += handle_exec(program_name, parent_value, current_time, vectors, external_files, 0);
-                    
-                    // Add switch to user mode after EXEC completes
-execution += std::to_string(current_time) + ", 1, switch to user mode\n";
-current_time += 1;
-
-if (program_name == "program2") {
-    // Execute program2 in user mode
-    execution += std::to_string(current_time) + ", 100, CPU Burst //executing program2\n";
-    current_time += 100;
-    
-    // Now handle the SYSCALL interrupt
-    execution += handle_interrupt(4, current_time, vectors, delays, "SYSCALL");
-}
-                    
-                    // Print ALL PCBs in reverse order (only PID 0 exists now)
-                    status += "\ntime: " + std::to_string(current_time) + "; current trace: EXEC " + program_name + ", " + std::to_string(parent_value) + "\n";
-                    status += "+-----+--------------+------------------+------+---------+\n";
-                    status += "| PID | program name | partition number | size | state   |\n";
-                    status += "+-----+--------------+------------------+------+---------+\n";
-                    
-                    for (int i = pcb_table.size() - 1; i >= 0; i--) {
-                        const auto& pcb = pcb_table[i];
-                        status += "| " + std::to_string(pcb.pid) + " | " + pcb.program_name 
-                            + " | " + std::to_string(pcb.partition_number) + " | " 
-                            + std::to_string(pcb.size) + " | " + pcb.state + " |\n";
-                    }
-                    status += "+-----+--------------+------------------+------+---------+\n";
-                }
-                else if (parent_activity == "SYSCALL" || parent_activity == "END_IO") {
-                    execution += handle_interrupt(parent_value, current_time, vectors, delays, parent_activity);
-                }
-            }
-        }
+        // === CPU ===
         else if (activity == "CPU") {
             execution += simulate_cpu(value, current_time);
         }
+        // === EXEC ===
         else if (activity.size() >= 4 && activity.substr(0, 4) == "EXEC") {
             std::string program_name = activity.substr(5);
+            program_name.erase(0, program_name.find_first_not_of(" \t\r\n"));
+            program_name.erase(program_name.find_last_not_of(" \t\r\n") + 1);
+            
+            int exec_pid = (in_child_block) ? current_pid : 0;
             
             for (auto& pcb : pcb_table) {
-                if (pcb.pid == 0) {
+                if (pcb.pid == exec_pid) {
                     pcb.state = "running";
                 }
             }
             
-            execution += handle_exec(program_name, value, current_time, vectors, external_files, current_pid);
+            execution += handle_exec(program_name, value, current_time, vectors, external_files, exec_pid);
             
             status += "\ntime: " + std::to_string(current_time) + "; current trace: EXEC " + program_name + ", " + std::to_string(value) + "\n";
             status += "+-----+--------------+------------------+------+---------+\n";
             status += "| PID | program name | partition number | size | state   |\n";
             status += "+-----+--------------+------------------+------+---------+\n";
             
-            for (int i = pcb_table.size() - 1; i >= 0; i--) {
-                const auto& pcb = pcb_table[i];
+            for (int j = (int)pcb_table.size() - 1; j >= 0; j--) {
+                const auto& pcb = pcb_table[j];
                 status += "| " + std::to_string(pcb.pid) + " | " + pcb.program_name 
                     + " | " + std::to_string(pcb.partition_number) + " | " 
                     + std::to_string(pcb.size) + " | " + pcb.state + " |\n";
             }
             status += "+-----+--------------+------------------+------+---------+\n";
         }
+        // === SYSCALL / INTERRUPT ===
         else if (activity == "SYSCALL" || activity == "END_IO") {
             execution += handle_interrupt(value, current_time, vectors, delays, activity);
         }

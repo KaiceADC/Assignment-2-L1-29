@@ -38,3 +38,4 @@ Partition 5: 2 MB - Code: free
 
 PCB Table:
 PID 0: program2 (Partition 1, 15 MB, State: running)
+PID 1 (Parent: 0): program1 (Partition 0, 10 MB, State: terminated)

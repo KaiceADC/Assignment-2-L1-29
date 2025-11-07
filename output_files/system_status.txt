@@ -11,13 +11,13 @@ time: 247; current trace: EXEC program1, 50 //exec is run by child
 +-----+--------------+------------------+------+---------+
 | PID | program name | partition number | size | state   |
 +-----+--------------+------------------+------+---------+
+| 1 | program1 | 4 | 10 | running |
 | 0 | init | 6 | 1 | waiting |
-| 1 | program1 | 1 | 10 | running |
 +-----+--------------+------------------+------+---------+
 
 time: 620; current trace: EXEC program2, 25 //exec run by parent, init no longer exists
 +-----+--------------+------------------+------+---------+
 | PID | program name | partition number | size | state   |
 +-----+--------------+------------------+------+---------+
-| 0 | program2 | 2 | 15 | running |
+| 0 | program2 | 3 | 15 | running |
 +-----+--------------+------------------+------+---------+

@@ -10,7 +10,7 @@
 35, 1, find vector 3 in memory position 0x0006
 36, 1, load address 0X042B into the PC
 37, 50, Program is 10 MB large
-87, 150, loading program1 from disk to partition 1
+87, 150, loading program1 from disk to partition 4
 237, 3, marking partition as occupied
 240, 6, updating PCB
 246, 0, scheduler called
@@ -21,7 +21,7 @@
 358, 1, find vector 3 in memory position 0x0006
 359, 1, load address 0X042B into the PC
 360, 25, Program is 15 MB large
-385, 225, loading program2 from disk to partition 2
+385, 225, loading program2 from disk to partition 3
 610, 3, marking partition as occupied
 613, 6, updating PCB
 619, 0, scheduler called
@@ -35,12 +35,12 @@
 
 Final System State
 Partition Table:
-Partition 1: 40 MB - Code: program1
-Partition 2: 25 MB - Code: program2
-Partition 3: 15 MB - Code: free
-Partition 4: 10 MB - Code: free
+Partition 1: 40 MB - Code: free
+Partition 2: 25 MB - Code: free
+Partition 3: 15 MB - Code: program2
+Partition 4: 10 MB - Code: program1
 Partition 5: 8 MB - Code: free
 Partition 6: 2 MB - Code: free
 
 PCB Table:
-PID 0: program2 (Partition 2, 15 MB, State: running)
+PID 0: program2 (Partition 3, 15 MB, State: running)

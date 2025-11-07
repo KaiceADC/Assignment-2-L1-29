@@ -63,12 +63,18 @@ std::vector<ExternalFile> load_external_files(const std::string& filename) {
 }
 
 int find_available_partition(unsigned int program_size) {
+    int best_partition = -1;
+    int best_size = 1000;  // Start with a large number (larger than any partition)
+    
     for (auto& part : partition_table) {
         if (part.code == "free" && part.size >= program_size) {
-            return part.number;
+            if (part.size < best_size) {
+                best_size = part.size;
+                best_partition = part.number;
+            }
         }
     }
-    return -1;
+    return best_partition;
 }
 
 void add_to_ready_queue(int pid) {
@@ -525,16 +531,26 @@ int main(int argc, char** argv) {
             status += "+-----+--------------+------------------+------+---------+\n";
             
             if (in_child_block) {
-                // Show child first (running), then parent (running)
+                // Show child first (current_pid)
                 for (int j = 0; j < (int)pcb_table.size(); j++) {
                     const auto& pcb = pcb_table[j];
-                    if (pcb.pid == current_pid || pcb.pid == 0) {
+                    if (pcb.pid == current_pid) {
                         status += "| " + std::to_string(pcb.pid) + " | " + pcb.program_name 
                             + " | " + std::to_string(pcb.partition_number) + " | " 
                             + std::to_string(pcb.size) + " | " + pcb.state + " |\n";
                     }
                 }
-            } else {
+                // Show parent second (pid 0)
+                for (int j = 0; j < (int)pcb_table.size(); j++) {
+                    const auto& pcb = pcb_table[j];
+                    if (pcb.pid == 0) {
+                        status += "| " + std::to_string(pcb.pid) + " | " + pcb.program_name 
+                            + " | " + std::to_string(pcb.partition_number) + " | " 
+                            + std::to_string(pcb.size) + " | " + pcb.state + " |\n";
+                    }
+                }
+            }
+                else {
                 // Show only parent (running)
                 for (int j = 0; j < (int)pcb_table.size(); j++) {
                     const auto& pcb = pcb_table[j];

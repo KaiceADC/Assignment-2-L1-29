@@ -15,19 +15,19 @@ int next_pid = 1;
 
 void initialize_system() {
     partition_table = {
-        {0, 40, "free"},
-        {1, 25, "free"},
-        {2, 15, "free"},
-        {3, 10, "free"},
-        {4, 8, "free"},
-        {5, 2, "free"}
+        {1, 40, "free"},  // Changed from 0 to 1
+        {2, 25, "free"},  // Changed from 1 to 2
+        {3, 15, "free"},  // Changed from 2 to 3
+        {4, 10, "free"},  // Changed from 3 to 4
+        {5, 8, "free"},   // Changed from 4 to 5
+        {6, 2, "free"}    // Changed from 5 to 6
     };
     
     PCB init_process;
     init_process.pid = 0;
     init_process.ppid = -1;
     init_process.program_name = "init";
-    init_process.partition_number = 6;
+    init_process.partition_number = 6;  // Keep as 6
     init_process.size = 1;
     init_process.state = "running";
     init_process.priority = 0;
@@ -36,6 +36,7 @@ void initialize_system() {
     ready_queue.push(0);
     next_pid = 1;
 }
+
 
 std::vector<ExternalFile> load_external_files(const std::string& filename) {
     std::vector<ExternalFile> files;
@@ -140,7 +141,7 @@ std::string handle_fork(int& current_time, std::vector<std::string>& vectors, in
     child.pid = next_pid++;
     child.ppid = current_pid;
     child.priority = 1;
-    child.partition_number = 6;
+    child.partition_number = 5;
     child.size = 1;
     pcb_table.push_back(child);
     parent_child_map[current_pid].push_back(child.pid);
@@ -467,11 +468,11 @@ int main(int argc, char** argv) {
             int child_pid = next_pid - 1;
             
             for (auto& pcb : pcb_table) {
-                if (pcb.pid == 0) {
-                    pcb.state = "running";
+                if (pcb.pid == current_pid) {  // Current process becomes waiting
+                    pcb.state = "waiting";
                 }
                 if (pcb.pid == child_pid) {
-                    pcb.state = "waiting";
+                    pcb.state = "running";  // Child is running
                 }
             }
             
@@ -481,11 +482,14 @@ int main(int argc, char** argv) {
             status += "+-----+--------------+------------------+------+---------+\n";
             
             for (int j = (int)pcb_table.size() - 1; j >= 0; j--) {
-                const auto& pcb = pcb_table[j];
+            const auto& pcb = pcb_table[j];
+            if (pcb.state != "terminated") {
                 status += "| " + std::to_string(pcb.pid) + " | " + pcb.program_name 
                     + " | " + std::to_string(pcb.partition_number) + " | " 
                     + std::to_string(pcb.size) + " | " + pcb.state + " |\n";
             }
+        }
+
             status += "+-----+--------------+------------------+------+---------+\n";
             
             current_pid = child_pid;
@@ -510,27 +514,45 @@ int main(int argc, char** argv) {
             
             execution += handle_exec(program_name, value, current_time, vectors, external_files, exec_pid);
             
-            status += "\ntime: " + std::to_string(current_time) + "; current trace: EXEC " + program_name + ", " + std::to_string(value) + "\n";
+            status += "\ntime: " + std::to_string(current_time) + "; current trace: EXEC " + program_name + ", " + std::to_string(value);
+            if (in_child_block) {
+                status += " //exec is run by child\n";
+            } else {
+                status += " //exec run by parent, init no longer exists\n";
+            }
             status += "+-----+--------------+------------------+------+---------+\n";
             status += "| PID | program name | partition number | size | state   |\n";
             status += "+-----+--------------+------------------+------+---------+\n";
             
-            for (int j = (int)pcb_table.size() - 1; j >= 0; j--) {
-                const auto& pcb = pcb_table[j];
-                status += "| " + std::to_string(pcb.pid) + " | " + pcb.program_name 
-                    + " | " + std::to_string(pcb.partition_number) + " | " 
-                    + std::to_string(pcb.size) + " | " + pcb.state + " |\n";
+            if (in_child_block) {
+                // Show child first (running), then parent (running)
+                for (int j = 0; j < (int)pcb_table.size(); j++) {
+                    const auto& pcb = pcb_table[j];
+                    if (pcb.pid == current_pid || pcb.pid == 0) {
+                        status += "| " + std::to_string(pcb.pid) + " | " + pcb.program_name 
+                            + " | " + std::to_string(pcb.partition_number) + " | " 
+                            + std::to_string(pcb.size) + " | " + pcb.state + " |\n";
+                    }
+                }
+            } else {
+                // Show only parent (running)
+                for (int j = 0; j < (int)pcb_table.size(); j++) {
+                    const auto& pcb = pcb_table[j];
+                    if (pcb.state != "terminated") {
+                        status += "| " + std::to_string(pcb.pid) + " | " + pcb.program_name 
+                            + " | " + std::to_string(pcb.partition_number) + " | " 
+                            + std::to_string(pcb.size) + " | " + pcb.state + " |\n";
+                    }
+                }
             }
             status += "+-----+--------------+------------------+------+---------+\n";
             
-            // === LOAD AND EXECUTE PROGRAM FILE (at root) ===
             std::string program_file = program_name + ".txt";
             std::ifstream prog_file(program_file);
             
             if (prog_file.is_open()) {
                 std::string program_instruction;
                 while (std::getline(prog_file, program_instruction)) {
-                    // Trim the instruction
                     program_instruction.erase(program_instruction.find_last_not_of(" \n\r\t") + 1);
                     program_instruction = program_instruction.substr(program_instruction.find_first_not_of(" \n\r\t"));
                     
@@ -548,6 +570,7 @@ int main(int argc, char** argv) {
                 prog_file.close();
             }
         }
+
         // === SYSCALL / INTERRUPT ===
         else if (activity == "SYSCALL" || activity == "END_IO") {
             execution += handle_interrupt(value, current_time, vectors, delays, activity);
@@ -565,13 +588,15 @@ int main(int argc, char** argv) {
     
     execution += "\nPCB Table:\n";
     for (const auto& pcb : pcb_table) {
+        if (pcb.state == "terminated") continue;
         execution += "PID " + std::to_string(pcb.pid);
         if (pcb.ppid != -1) {
             execution += " (Parent: " + std::to_string(pcb.ppid) + ")";
         }
         execution += ": " + pcb.program_name + " (Partition " + std::to_string(pcb.partition_number)
-                  + ", " + std::to_string(pcb.size) + " MB, State: " + pcb.state + ")\n";
+                + ", " + std::to_string(pcb.size) + " MB, State: " + pcb.state + ")\n";
     }
+
     
     write_output(execution);
     write_system_status_file(status);

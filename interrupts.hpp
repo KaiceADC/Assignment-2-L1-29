@@ -4,8 +4,8 @@
  * Contains structure definitions, function declarations, and global variable declarations
  * 
  * This implementation handles:
- * - Part 3: CPU execution and interrupt handling (SYSCALL/END_IO)
- * - Part 4: Process management (FORK/EXEC) with multi-process scheduling
+ * - CPU execution and interrupt handling (SYSCALL/END_IO)
+ * - Process management (FORK/EXEC) with multi-process scheduling
  */
 
 #ifndef INTERRUPTS_HPP_

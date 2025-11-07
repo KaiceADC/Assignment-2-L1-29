@@ -1,0 +1,5 @@
+CPU, 50
+FORK, 10
+CPU, 30
+EXEC program1, 20
+CPU, 40

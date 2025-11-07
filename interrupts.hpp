@@ -18,6 +18,30 @@
 #define CPU_SPEED   100
 #define MEM_LIMIT   1
 
+// Partition structure for memory management
+struct Partition {
+    unsigned int number;
+    unsigned int size;      // in MB
+    std::string code;       // "free", "init", or program name
+};
+
+// PCB (Process Control Block)
+struct PCB {
+    int pid;
+    std::string program_name;
+    int partition_number;
+    int size;
+    std::string state;      // "running" or "waiting"
+};
+
+// External file (simulated disk)
+struct ExternalFile {
+    std::string program_name;
+    unsigned int size;      // in MB
+};
+
+
+
 /**
  * \brief parse the CLI arguments
  *

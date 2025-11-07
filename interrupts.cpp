@@ -9,6 +9,16 @@
 
 int main(int argc, char** argv) {
 
+    // Partition table (6 partitions)
+    std::vector<Partition> partition_table;
+
+    // PCB table
+    std::vector<PCB> pcb_table;
+
+    // External files
+    std::vector<ExternalFile> external_files;
+
+
     //vectors is a C++ std::vector of strings that contain the address of the ISR
     //delays  is a C++ std::vector of ints that contain the delays of each device
     //the index of these elemens is the device number, starting from 0

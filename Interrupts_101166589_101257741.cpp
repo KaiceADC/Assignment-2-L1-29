@@ -20,14 +20,14 @@ void initialize_system() {
         {2, 15, "free"},
         {3, 10, "free"},
         {4, 8, "free"},
-        {5, 2, "init"}  // ✅ Partition 5 is 2MB for init
+        {5, 2, "init"}
     };
     
     PCB init_process;
     init_process.pid = 0;
     init_process.ppid = -1;
     init_process.program_name = "init";
-    init_process.partition_number = 5;  // ✅ Init uses partition 5
+    init_process.partition_number = 5;
     init_process.size = 1;
     init_process.state = "running";
     init_process.priority = 0;
@@ -133,7 +133,6 @@ std::string handle_fork(int& current_time, std::vector<std::string>& vectors, in
         result += std::to_string(current_time) + ", 1, ERROR: Parent not found\n";
         current_time += 1;
         result += execute_iret(current_time);
-        result += restore_context(current_time);
         result += switch_to_user_mode(current_time);
         return result;
     }
@@ -142,7 +141,7 @@ std::string handle_fork(int& current_time, std::vector<std::string>& vectors, in
     child.pid = next_pid++;
     child.ppid = current_pid;
     child.priority = 1;
-    child.partition_number = 6;  // Child gets partition 6
+    child.partition_number = 6;
     child.size = 1;
     pcb_table.push_back(child);
     parent_child_map[current_pid].push_back(child.pid);
@@ -154,7 +153,6 @@ std::string handle_fork(int& current_time, std::vector<std::string>& vectors, in
     result += std::to_string(current_time) + ", 0, scheduler called\n";
     
     result += execute_iret(current_time);
-    result += restore_context(current_time);
     result += switch_to_user_mode(current_time);
     
     return result;
@@ -185,7 +183,6 @@ std::string handle_exec(const std::string& program_name, int& current_time,
         result += std::to_string(current_time) + ", 1, ERROR: Program not found\n";
         current_time += 1;
         result += execute_iret(current_time);
-        result += restore_context(current_time);
         result += switch_to_user_mode(current_time);
         return result;
     }
@@ -196,7 +193,6 @@ std::string handle_exec(const std::string& program_name, int& current_time,
         result += std::to_string(current_time) + ", 1, ERROR: No partition\n";
         current_time += 1;
         result += execute_iret(current_time);
-        result += restore_context(current_time);
         result += switch_to_user_mode(current_time);
         return result;
     }
@@ -232,7 +228,6 @@ std::string handle_exec(const std::string& program_name, int& current_time,
     result += std::to_string(current_time) + ", 0, scheduler called\n";
     
     result += execute_iret(current_time);
-    result += restore_context(current_time);
     result += switch_to_user_mode(current_time);
     
     return result;
@@ -261,14 +256,6 @@ std::string execute_iret(int& current_time) {
     return result;
 }
 
-std::string restore_context(int& current_time) {
-    const int CONTEXT_TIME = 10;
-    std::string result = std::to_string(current_time) + ", "
-                       + std::to_string(CONTEXT_TIME) + ", context restored\n";
-    current_time += CONTEXT_TIME;
-    return result;
-}
-
 std::string switch_to_user_mode(int& current_time) {
     std::string result = std::to_string(current_time) + ", 1, switch to user mode\n";
     current_time += 1;
@@ -287,7 +274,6 @@ std::string handle_interrupt(int device_num, int& current_time,
     current_time = new_time;
     result += execute_isr(device_num, current_time, delays, interrupt_type);
     result += execute_iret(current_time);
-    result += restore_context(current_time);
     result += switch_to_user_mode(current_time);
     
     return result;
@@ -425,7 +411,7 @@ int main(int argc, char** argv) {
     std::string status;
     int current_time = 0;
     int current_pid = 0;
-    int skip_mode = -1;  // ✅ -1=none, 0=skip_child, 1=skip_parent
+    int skip_mode = -1;
     
     initialize_system();
     external_files = load_external_files(argv[4]);
@@ -433,52 +419,45 @@ int main(int argc, char** argv) {
     while(std::getline(input_file, trace)) {
         auto [activity, value] = parse_trace(trace);
         
-        // ✅ Handle IF_CHILD: skip if parent, execute if child
         if (activity == "IF_CHILD") {
-            if (current_pid == 0) {  // parent
-                skip_mode = 0;  // skip this block
-            } else {  // child
-                skip_mode = -1;  // execute
+            if (current_pid == 0) {
+                skip_mode = 0;
+            } else {
+                skip_mode = -1;
             }
             continue;
         }
         
-        // ✅ Handle IF_PARENT: skip if child, execute if parent
         if (activity == "IF_PARENT") {
-            if (current_pid != 0) {  // child
-                skip_mode = 1;  // skip this block
-            } else {  // parent
-                skip_mode = -1;  // execute
+            if (current_pid != 0) {
+                skip_mode = 1;
+            } else {
+                skip_mode = -1;
             }
             continue;
         }
         
-        // ✅ Handle ENDIF: exit skip mode
         if (activity == "ENDIF") {
             skip_mode = -1;
             continue;
         }
         
-        // ✅ Skip if in skip mode
         if (skip_mode != -1) {
             continue;
         }
         
-        // Process activities
         if(activity == "CPU") {
             execution += simulate_cpu(value, current_time);
         }
         else if (activity == "FORK") {
             execution += handle_fork(current_time, vectors, current_pid);
             
-            current_pid = next_pid - 1;  // Switch to child
-            
             for (auto& pcb : pcb_table) {
                 if (pcb.pid == 0) {
-                    pcb.state = "waiting";
-                }
-                if (pcb.pid == current_pid) {
                     pcb.state = "running";
+                }
+                if (pcb.pid == next_pid - 1) {
+                    pcb.state = "waiting";
                 }
             }
             
@@ -495,6 +474,17 @@ int main(int argc, char** argv) {
         }
         else if (activity.substr(0, 4) == "EXEC") {
             std::string program_name = activity.substr(5);
+            
+            if (current_pid != 0) {
+                for (auto& pcb : pcb_table) {
+                    if (pcb.pid == current_pid) {
+                        pcb.state = "running";
+                    } else if (pcb.pid == 0) {
+                        pcb.state = "waiting";
+                    }
+                }
+            }
+            
             execution += handle_exec(program_name, current_time, vectors, external_files, current_pid);
             
             status += "\ntime: " + std::to_string(current_time) + "; current trace: EXEC " + program_name + ", " + std::to_string(value) + "\n";

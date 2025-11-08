@@ -1,140 +1,455 @@
 #ifndef INTERRUPTS_HPP_
 #define INTERRUPTS_HPP_
 
-#include <iostream>
-#include <fstream>
-#include <vector>
-#include <string>
-#include <tuple>
-#include <cstdio>
-#include <queue>
-#include <map>
-#include <limits>
+#include<iostream>
+#include<fstream>
+#include<string>
+#include<vector>
+#include<random>
+#include<utility>
+#include<sstream>
+#include<iomanip>
+#include <algorithm>
+#include<stdio.h>
 
+#define ADDR_BASE   0
+#define VECTOR_SIZE 2
 
+struct memory_partition_t {
+    const unsigned int partition_number;
+    const unsigned int size;
+    std::string code;
 
-// Simulator constants
-#define ADDR_BASE 0        // Base address for vector table
-#define VECTOR_SIZE 2      // Each vector entry is 2 bytes
-#define CPU_SPEED 100      // CPU clock speed (for future use)
-#define MEM_LIMIT 1        // Memory limit per process (for future use)
-
-// Memory partition - represents a fixed memory region allocated to processes
-struct Partition {
-    unsigned int number;    // Partition ID (0-4, 5 reserved for init)
-    unsigned int size;      // Size in megabytes
-    std::string code;       // Current contents: "free", "init", or program name
+    memory_partition_t(unsigned int _pn, unsigned int _s, std::string _c):
+        partition_number(_pn), size(_s), code(_c) {}
 };
 
-// Process Control Block - stores all information about a running process
-struct PCB {
-    int pid;                    // Process identifier (unique)
-    int ppid;                   // Parent process ID (-1 if init)
-    std::string program_name;   // Name of program currently executing
-    int partition_number;       // Allocated memory partition
-    int size;                   // Program size in MB
-    std::string state;          // Process state: "running", "waiting", "ready", "terminated"
-    int priority;               // Priority: 0=normal, 1=child (child executes first)
+memory_partition_t memory[] = {
+    memory_partition_t(1, 40, "empty"),
+    memory_partition_t(2, 25, "empty"),
+    memory_partition_t(3, 15, "empty"),
+    memory_partition_t(4, 10, "empty"),
+    memory_partition_t(5, 8, "empty"),
+    memory_partition_t(6, 2, "empty")
 };
 
-// External file structure - represents a program stored on simulated disk
-struct ExternalFile {
-    std::string program_name;   // Program name
-    unsigned int size;          // Size in MB
+struct PCB{
+    unsigned int    PID;
+    int             PPID;
+    std::string     program_name;
+    unsigned int    size;
+    int             partition_number;
+
+    PCB(unsigned int _pid, int _ppid, std::string _pn, unsigned int _size, int _part_num):
+        PID(_pid), PPID(_ppid), program_name(_pn), size(_size), partition_number(_part_num) {}
 };
 
-// System initialization - sets up memory partitions and init process
-void initialize_system();
+struct external_file{
+    std::string     program_name;
+    unsigned int    size;
+};
 
-// Load programs from file - simulates disk storage for EXEC operations
-std::vector<ExternalFile> load_external_files(const std::string& filename);
+//Allocates a program to memory (if there is space)
+//returns true if the allocation was sucessful, false if not.
+bool allocate_memory(PCB* current) {
+    for(int i = 5; i >= 0; i--) { //Start from smallest partition
+        //check is the code will fit and if the partition is empty
+        if(memory[i].size >= current->size && memory[i].code == "empty") {
+            current->partition_number = memory[i].partition_number;
+            memory[i].code = current->program_name;
+            return true;
+        }
+    }
+    return false;
+}
 
-// FORK system call - creates child process by cloning parent PCB
-std::string handle_fork(int& current_time, std::vector<std::string>& vectors, int current_pid);
+//frees the memory given PCB.
+void free_memory(PCB* process) {
+    memory[process->partition_number - 1].code = "empty";
+    process->partition_number = -1;
+}
 
-// EXEC system call - loads program from disk into memory partition
-std::string handle_exec(const std::string& program_name, int& current_time,
-                        std::vector<std::string>& vectors, 
-                        std::vector<ExternalFile>& external_files,
-                        int current_pid);
+// Following function was taken from stackoverflow; helper function for splitting strings
+std::vector<std::string> split_delim(std::string input, std::string delim) {
+    std::vector<std::string> tokens;
+    std::size_t pos = 0;
+    std::string token;
+    while ((pos = input.find(delim)) != std::string::npos) {
+        token = input.substr(0, pos);
+        tokens.push_back(token);
+        input.erase(0, pos + delim.length());
+    }
+    tokens.push_back(input);
 
-// Memory management - find free partition using first-fit allocation
-// Returns partition number on success, -1 if no suitable partition
-int find_available_partition(unsigned int program_size);
+    return tokens;
+}
 
-// Process scheduling - get next ready process in queue
-// Returns process ID, or -1 if queue is empty
-int get_next_process();
+/**
+ * \brief parse the CLI arguments
+ *
+ * This helper function parses command line arguments and checks for errors 
+ * 
+ * @param argc number of command line arguments
+ * @param argv the command line arguments
+ * @return a vector of strings (the parsed vector table), a vector of delays, a vector of external files
+ * 
+ */
+std::tuple<std::vector<std::string>, std::vector<int>, std::vector<external_file>>parse_args(int argc, char** argv) {
+    if(argc != 5) {
+        std::cout << "ERROR!\nExpected 4 argument, received " << argc - 1 << std::endl;
+        std::cout << "To run the program, do: ./interrutps <your_trace_file.txt> <your_vector_table.txt> <your_device_table.txt> <your_external_files.txt>" << std::endl;
+        exit(1);
+    }
 
-// Add process to ready queue for execution
-void add_to_ready_queue(int pid);
+    std::ifstream input_file;
+    input_file.open(argv[1]);
+    if (!input_file.is_open()) {
+        std::cerr << "Error: Unable to open file: " << argv[1] << std::endl;
+        exit(1);
+    }
+    input_file.close();
 
-// Remove process from ready queue (cleanup after termination)
-void remove_from_ready_queue(int pid);
+    input_file.open(argv[2]);
+    if (!input_file.is_open()) {
+        std::cerr << "Error: Unable to open file: " << argv[2] << std::endl;
+        exit(1);
+    }
 
-// Check if process is child of another process
-bool is_child_of(int pid, int parent_pid);
+    std::string vector;
+    std::vector<std::string> vectors;
+    while(std::getline(input_file, vector)) {
+        vectors.push_back(vector);
+    }
+    input_file.close();
 
-// Mark process as terminated for cleanup
-void terminate_process(int pid);
+    std::string duration;
+    std::vector<int> delays;
+    input_file.open(argv[3]);
 
-// CPU simulation - execute for specified duration in milliseconds
-std::string simulate_cpu(int duration, int& current_time);
+    if (!input_file.is_open()) {
+        std::cerr << "Error: Unable to open file: " << argv[3] << std::endl;
+        exit(1);
+    }
 
-// Execute interrupt service routine for a device
-// Duration from delays.txt, indexed by device_num
+    while(std::getline(input_file, duration)) {
+        delays.push_back(std::stoi(duration));
+    }
+    input_file.close();
+
+    std::vector<external_file> external_files;
+    input_file.open(argv[4]);
+    if (!input_file.is_open()) {
+        std::cerr << "Error: Unable to open file: " << argv[4] << std::endl;
+        exit(1);
+    }
+
+    std::string file_content;
+    while(std::getline(input_file, file_content)) {
+        external_file entry;
+        auto file_info      = split_delim(file_content, ",");
+
+        entry.program_name  = file_info[0];
+        entry.size          = std::stoi(file_info[1]);
+        external_files.push_back(entry);
+    }
+
+    input_file.close();
+
+
+    return {vectors, delays, external_files};
+}
+
+//Parces each trace and returns a tuple: {Tace activity, duration or interrupt number, program name (if applicable)}
+std::tuple<std::string, int, std::string> parse_trace(std::string trace) {
+    //split line by ','
+    auto parts = split_delim(trace, ",");
+    if (parts.size() < 2) {
+        std::cerr << "Error: Malformed input line: " << trace << std::endl;
+        return {"null", -1, "null"};
+    }
+
+    auto activity = parts[0];
+    auto duration_intr = std::stoi(parts[1]);
+    std::string extern_file = "null";
+
+    auto exec = split_delim(parts[0], " ");
+    if(exec[0] == "EXEC") {
+        extern_file = exec[1];
+        activity = "EXEC";
+    }
+
+    return {activity, duration_intr, extern_file};
+}
+
+//Default interrupt boilerplate
+std::pair<std::string, int> intr_boilerplate(int current_time, int intr_num, int context_save_time, std::vector<std::string> vectors) {
+
+    std::string execution = "";
+
+    execution += std::to_string(current_time) + ", " + std::to_string(1) + ", switch to kernel mode\n";
+    current_time++;
+
+    execution += std::to_string(current_time) + ", " + std::to_string(context_save_time) + ", context saved\n";
+    current_time += context_save_time;
+    
+    char vector_address_c[10];
+    sprintf(vector_address_c, "0x%04X", (ADDR_BASE + (intr_num * VECTOR_SIZE)));
+    std::string vector_address(vector_address_c);
+
+    execution += std::to_string(current_time) + ", " + std::to_string(1) + ", find vector " + std::to_string(intr_num) 
+                    + " in memory position " + vector_address + "\n";
+    current_time++;
+
+    execution += std::to_string(current_time) + ", " + std::to_string(1) + ", load address " + vectors.at(intr_num) + " into the PC\n";
+    current_time++;
+
+    return std::make_pair(execution, current_time);
+}
+
+//Writes a string to a file
+void write_output(std::string execution, const char* filename) {
+    std::ofstream output_file(filename);
+
+    if (output_file.is_open()) {
+        output_file << execution;
+        output_file.close();  // Close the file when done
+        std::cout << "File content overwritten successfully." << std::endl;
+    } else {
+        std::cerr << "Error opening file!" << std::endl;
+    }
+
+    std::cout << "Output generated in execution.txt" << std::endl;
+}
+
+//Helper function for a sanity check. Prints the external files table
+void print_external_files(std::vector<external_file> files) {
+    const int tableWidth = 24;
+
+    std::cout << "List of external files (" << files.size() << " entry(s)): " << std::endl;
+    
+    // Print top border
+    std::cout << "+" << std::setfill('-') << std::setw(tableWidth) << "+" << std::endl;
+    
+    // Print headers
+    std::cout << "|"
+              << std::setfill(' ') << std::setw(10) << "file name"
+              << std::setw(2) << "|"
+              << std::setfill(' ') << std::setw(10) << "files size"
+              << std::setw(2) << "|" << std::endl;
+    
+    // Print separator
+    std::cout << "+" << std::setfill('-') << std::setw(tableWidth) << "+" << std::endl;
+    
+    // Print each PCB entry
+    for (const auto& file : files) {
+        std::cout << "|"
+                  << std::setfill(' ') << std::setw(10) << file.program_name
+                  << std::setw(2) << "|"
+                  << std::setw(10) << file.size
+                  << std::setw(2) << "|" << std::endl;
+    }
+    
+    // Print bottom border
+    std::cout << "+" << std::setfill('-') << std::setw(tableWidth) << "+" << std::endl;
+}
+
+//This function takes as input: the current PCB and the waitqueue (which is a
+//std::vector of the PCB struct); the function returns the information as a table
+std::string print_PCB(PCB current, std::vector<PCB> _PCB) {
+    const int tableWidth = 55;
+
+    std::stringstream buffer;
+    
+    // Print top border
+    buffer << "+" << std::setfill('-') << std::setw(tableWidth) << "+" << std::endl;
+    
+    // Print headers
+    buffer << "|"
+              << std::setfill(' ') << std::setw(4) << "PID"
+              << std::setw(2) << "|"
+              << std::setfill(' ') << std::setw(12) << "program name"
+              << std::setw(2) << "|"
+              << std::setfill(' ') << std::setw(16) << "partition number"
+              << std::setw(2) << "|"
+              << std::setfill(' ') << std::setw(5) << "size"
+              << std::setw(2) << "|" 
+              << std::setfill(' ') << std::setw(8) << "state"
+              << std::setw(2) << "|" << std::endl;
+    
+    // Print separator
+    buffer << "+" << std::setfill('-') << std::setw(tableWidth) << "+" << std::endl;
+
+    buffer << "|"
+                  << std::setfill(' ') << std::setw(4) << current.PID
+                  << std::setw(2) << "|"
+                  << std::setw(12) << current.program_name
+                  << std::setw(2) << "|"
+                  << std::setw(16) << current.partition_number
+                  << std::setw(2) << "|"
+                  << std::setw(5) << current.size
+                  << std::setw(2) << "|"
+                  << std::setw(8) << "running"
+                  << std::setw(2) << "|" << std::endl;
+    
+    // Print each PCB entry
+    for (const auto& program : _PCB) {
+        buffer << "|"
+                  << std::setfill(' ') << std::setw(4) << program.PID
+                  << std::setw(2) << "|"
+                  << std::setw(12) << program.program_name
+                  << std::setw(2) << "|"
+                  << std::setw(16) << program.partition_number
+                  << std::setw(2) << "|"
+                  << std::setw(5) << program.size
+                  << std::setw(2) << "|"
+                  << std::setw(8) << "waiting"
+                  << std::setw(2) << "|" << std::endl;
+    }
+    
+    // Print bottom border
+    buffer << "+" << std::setfill('-') << std::setw(tableWidth) << "+" << std::endl;
+
+    return buffer.str();
+}
+
+
+// Searches the external_files table and returns the size of the program
+unsigned int get_size(std::string name, std::vector<external_file> external_files) {
+    int size = -1;
+
+    for (auto file : external_files) { 
+        if(file.program_name == name){
+            size = file.size;
+            break;
+        }
+    }
+
+    return size;
+}
+
+/*
+* Function to simulate CPU time 
+*/
+
+std::string simulate_cpu(int duration, int& current_time) {
+
+    std::string result = std::to_string(current_time) + ", " 
+                        + std::to_string(duration) + ", "
+                        + "CPU Burst\n";
+    current_time += duration;
+    return result;
+
+}
+
+/*
+    ISR execution function, simulates the execution of an ISR for a given device
+    device_num: the device number (index in the delays vector)
+    current_time: reference to the current time in the simulation
+    delays: vector of delays for each device
+
+    returns a string representing the ISR execution log
+*/
+
 std::string execute_isr(int device_num, int& current_time, std::vector<int>& delays,
-                        const std::string& isr_type);
+                        const std::string& isr_type) {
+    int isr_delay = delays[device_num];
+    std::string result = std::to_string(current_time) + ", " 
+                        + std::to_string(isr_delay) + ", " 
+                        + isr_type + ": run the ISR\n";
+    current_time += isr_delay;
+    return result;
 
-// Return from interrupt instruction (1ms operation)
-std::string execute_iret(int& current_time);
+}
 
-// Restore processor context from stack after interrupt (10ms standard)
-std::string restore_context(int& current_time);
+/*
+    IRET execution function, simulates the execution of the IRET instruction
+    current_time: reference to the current time in the simulation
 
-// Switch from kernel mode to user mode (1ms operation)
-std::string switch_to_user_mode(int& current_time);
+    returns a string representing the IRET execution log
+*/
+std::string execute_iret(int& current_time) {
+    std::string result = std::to_string(current_time) + ", 1, IRET\n";
+    current_time += 1;
+    return result;
+}
 
-// Complete interrupt handling sequence
-// Combines: entry boilerplate + ISR execution + exit sequence
-std::string handle_interrupt(int device_num, int& current_time,
-                            std::vector<std::string>& vectors,
-                            std::vector<int>& delays,
-                            const std::string& interrupt_type);
+/*
+    restore_context function, simulates the restoration of the CPU context
+    current_time: reference to the current time in the simulation
 
-// Standard interrupt entry sequence for all interrupts
-// Performs: kernel mode switch -> context save -> vector lookup -> PC load
-// Returns: (execution trace string, updated time)
-std::pair<std::string, int> intr_boilerplate(int current_time, int intr_num, 
-                                              int context_save_time, 
-                                              std::vector<std::string> vectors);
+    returns a string representing the context restoration log
+*/
+std::string restore_context(int& current_time) {
+    const int CONTEXT_TIME = 10;
+    std::string result = std::to_string(current_time) + ", " 
+                        + std::to_string(CONTEXT_TIME) + ", " 
+                        + "context restored\n";
+    current_time += CONTEXT_TIME;
+    return result;
+}
 
-// Parse command line arguments and load all input files
-// Arguments: ./program trace_file vectors_file delays_file external_files_file
-// Returns: (vector_table, delay_table)
-std::tuple<std::vector<std::string>, std::vector<int>> parse_args(int argc, char** argv);
+/*
+    switch_to_user_mode function, simulates switching the CPU back to user mode
+    current_time: reference to the current time in the simulation
 
-// Parse single trace line - extract activity name and numeric value
-// Example: "FORK,10" -> ("FORK", 10)
-std::tuple<std::string, int> parse_trace(std::string trace);
+    returns a string representing the switch to user mode log
+*/
+std::string switch_to_user_mode(int& current_time) {
+    std::string result = std::to_string(current_time) + ", 1, switch to user mode\n";
+    current_time += 1;
+    return result;
+}
 
-// String utility - split string by delimiter
-// Example: split_delim("a,b,c", ",") -> ["a", "b", "c"]
-std::vector<std::string> split_delim(std::string input, std::string delim);
 
-// Write execution trace to file (execution.txt)
-// Contains all simulation events with timestamps and final system state
-void write_output(std::string execution);
+/*
+    handle_interrupt function, simulates the entire interrupt handling process
+    device_num: the device number (index in the vectors and delays vectors)
+    current_time: reference to the current time in the simulation
+    vectors: vector of ISR addresses for each device
+    delays: vector of delays for each device
+    interrupt_type: string representing the type of interrupt (e.g., "SYSCALL", "END_IO")
 
-// Write system status to file (system_status.txt)
-// Records PCB snapshots after major operations
-void write_system_status_file(std::string status);
+    returns a string representing the complete interrupt handling log
+*/
+std::string handle_interrupt(int device_num, int& current_time, std::vector<std::string>& vectors, std::vector<int>& delays, const std::string& interrupt_type) {
 
-// Global variables - system state maintained throughout execution
-extern std::vector<Partition> partition_table;              // Memory partitions
-extern std::vector<PCB> pcb_table;                          // All processes
-extern std::vector<ExternalFile> external_files;           // Available programs
-extern std::queue<int> ready_queue;                         // Ready processes for scheduling
-extern std::map<int, std::vector<int>> parent_child_map;   // Parent-child relationships
+    std::string result = "";
+    const int CONTEXT_TIME = 10;
 
+    auto [boilerplate, new_time] = intr_boilerplate(current_time, device_num, CONTEXT_TIME, vectors);
+
+    result += boilerplate;
+    current_time = new_time;
+
+    result += execute_isr(device_num, current_time, delays, interrupt_type);
+    result += execute_iret(current_time);
+    result += restore_context(current_time);
+    result += switch_to_user_mode(current_time);
+
+    return result;
+
+}
 #endif
+// Helper function to append system status table
+void append_system_status(std::string& system_status, int current_time, const std::string& trace_type, 
+                         int duration, const PCB& running_pcb, const std::vector<PCB>& waiting_pcbs) {
+    system_status += "time: " + std::to_string(current_time) + "; current trace: " + trace_type + ", " 
+                    + std::to_string(duration) + "\n";
+    system_status += "+------------------------------------------------------+\n";
+    system_status += "| PID |program name |partition number | size |   state |\n";
+    system_status += "+------------------------------------------------------+\n";
+    
+    // Show running process
+    system_status += "|   " + std::to_string(running_pcb.PID) + " |    " + running_pcb.program_name 
+            + " |               " + std::to_string(running_pcb.partition_number) + " |    " 
+            + std::to_string(running_pcb.size) + " | running |\n";
+    
+    // Show all waiting processes
+    for (const auto& pcb : waiting_pcbs) {
+        system_status += "|   " + std::to_string(pcb.PID) + " |    " + pcb.program_name 
+                + " |               " + std::to_string(pcb.partition_number) + " |    " 
+                + std::to_string(pcb.size) + " | waiting |\n";
+    }
+    
+    system_status += "+------------------------------------------------------+\n\n";
+}
